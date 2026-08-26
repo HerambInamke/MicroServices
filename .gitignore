@@ -1,3 +1,9 @@
 *.md
 .claude/
 history/
+.obsidian/
+node_modules/
+dist/
+build/
+.env
+.env.*
