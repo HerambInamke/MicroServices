@@ -38,6 +38,117 @@ services:
     networks:
       - provenance_net
 
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: root
+      POSTGRES_PASSWORD: rootpassword
+    ports:
+      - "5432:5432"
+    networks:
+      - provenance_net
+
+  mongodb:
+    image: mongo:6-jammy
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: rootpassword
+    ports:
+      - "27017:27017"
+    networks:
+      - provenance_net
+
+  minio:
+    image: minio/minio:RELEASE.2023-11-20T22-40-07Z
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: root
+      MINIO_ROOT_PASSWORD: rootpassword
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    networks:
+      - provenance_net
+
+  auth-identity:
+    build:
+      context: ./services/auth-identity
+    ports:
+      - "8081:8081"
+    environment:
+      - PORT=8081
+      - DB_URL=postgres://root:rootpassword@postgres:5432/postgres?sslmode=disable
+      - KAFKA_BROKERS=kafka:9092
+    depends_on:
+      - postgres
+      - kafka
+    networks:
+      - provenance_net
+
+  business-profile:
+    build:
+      context: ./services/business-profile
+    ports:
+      - "8082:8082"
+    environment:
+      - PORT=8082
+      - MONGO_URL=mongodb://root:rootpassword@mongodb:27017/business_profiles?authSource=admin
+      - KAFKA_BROKERS=kafka:9092
+    depends_on:
+      - mongodb
+      - kafka
+    networks:
+      - provenance_net
+
+  wholesale-catalog:
+    build:
+      context: ./services/wholesale-catalog
+    ports:
+      - "8083:8083"
+    environment:
+      - PORT=8083
+      - DB_URL=jdbc:postgresql://postgres:5432/postgres
+      - DB_USER=root
+      - DB_PASS=rootpassword
+      - KAFKA_BROKERS=kafka:9092
+    depends_on:
+      - postgres
+      - kafka
+    networks:
+      - provenance_net
+
+  order-payment:
+    build:
+      context: ./services/order-payment
+    ports:
+      - "8084:8084"
+    environment:
+      - PORT=8084
+      - DB_URL=postgresql://root:rootpassword@postgres:5432/postgres
+      - KAFKA_BROKERS=kafka:9092
+    depends_on:
+      - postgres
+      - kafka
+    networks:
+      - provenance_net
+
+  media-upload:
+    build:
+      context: ./services/media-upload
+    ports:
+      - "8085:8085"
+    environment:
+      - PORT=8085
+      - DB_URL=postgres://root:rootpassword@postgres:5432/postgres?sslmode=disable
+      - MINIO_URL=http://minio:9000
+      - KAFKA_BROKERS=kafka:9092
+    depends_on:
+      - postgres
+      - minio
+      - kafka
+    networks:
+      - provenance_net
+
 networks:
   provenance_net:
     driver: bridge
