@@ -38,14 +38,6 @@ services:
     networks:
       - provenance_net
 
-  frontend:
-    build:
-      context: ./frontend
-    ports:
-      - "5173:5173"
-    networks:
-      - provenance_net
-
 networks:
   provenance_net:
     driver: bridge
