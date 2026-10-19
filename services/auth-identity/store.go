@@ -39,24 +39,6 @@ type Store interface {
 	RevokeRefresh(ctx context.Context, jti, userID string) error
 }
 
-// shortcut: schema is applied at startup with IF NOT EXISTS, not versioned migrations; adopt a migration tool when the first schema change lands.
-const schema = `
-CREATE TABLE IF NOT EXISTS users (
-	id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-	email          text NOT NULL UNIQUE,
-	phone          text UNIQUE,
-	password_hash  text NOT NULL,
-	role           text NOT NULL,
-	wallet_address text UNIQUE,
-	created_at     timestamptz NOT NULL DEFAULT now()
-);
-CREATE TABLE IF NOT EXISTS refresh_tokens (
-	jti        text PRIMARY KEY,
-	user_id    uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-	expires_at timestamptz NOT NULL,
-	revoked    boolean NOT NULL DEFAULT false
-);`
-
 type pgStore struct{ pool *pgxpool.Pool }
 
 func newPGStore(ctx context.Context, url string) (*pgStore, error) {
@@ -68,7 +50,7 @@ func newPGStore(ctx context.Context, url string) (*pgStore, error) {
 		pool.Close()
 		return nil, err
 	}
-	if _, err := pool.Exec(ctx, schema); err != nil {
+	if err := migrate(ctx, pool); err != nil {
 		pool.Close()
 		return nil, err
 	}
