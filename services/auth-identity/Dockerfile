@@ -2,13 +2,10 @@ FROM golang:1.21-alpine AS builder
 
 WORKDIR /app
 
-COPY go.mod ./
-# If there were dependencies we would copy go.sum and run go mod download, but for now we just have go.mod
-RUN go mod download || true
+COPY go.mod go.sum ./
+RUN go mod download
 
 COPY . .
-# go.sum is not committed yet; resolve it here until deps stabilise
-RUN go mod tidy
 
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o auth-service .
 

@@ -29,9 +29,9 @@ func newJTI() string {
 	return hex.EncodeToString(b)
 }
 
-func issueToken(secret []byte, u User, typ string, ttl time.Duration) (string, error) {
+func issueToken(secret []byte, u User, typ string, ttl time.Duration) (string, *claims, error) {
 	now := time.Now()
-	c := claims{
+	c := &claims{
 		Role: u.Role,
 		Type: typ,
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -41,7 +41,8 @@ func issueToken(secret []byte, u User, typ string, ttl time.Duration) (string, e
 			ExpiresAt: jwt.NewNumericDate(now.Add(ttl)),
 		},
 	}
-	return jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString(secret)
+	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, c).SignedString(secret)
+	return tok, c, err
 }
 
 func parseToken(secret []byte, tok, typ string) (*claims, error) {

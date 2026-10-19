@@ -7,11 +7,23 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
-type fakeStore struct{ users map[string]User }
+type fakeStore struct {
+	users   map[string]User
+	refresh map[string]struct {
+		userID  string
+		revoked bool
+	}
+}
 
-func newFake() *fakeStore { return &fakeStore{users: map[string]User{}} }
+func newFake() *fakeStore {
+	return &fakeStore{users: map[string]User{}, refresh: map[string]struct {
+		userID  string
+		revoked bool
+	}{}}
+}
 
 func (f *fakeStore) CreateUser(_ context.Context, u User) (User, error) {
 	for _, e := range f.users {
@@ -33,18 +45,91 @@ func (f *fakeStore) FindUser(_ context.Context, email, phone string) (User, erro
 	return User{}, ErrNotFound
 }
 
+func (f *fakeStore) GetUser(_ context.Context, id string) (User, error) {
+	u, ok := f.users[id]
+	if !ok {
+		return User{}, ErrNotFound
+	}
+	return u, nil
+}
+
+func (f *fakeStore) SetWallet(_ context.Context, id, address string) error {
+	u, ok := f.users[id]
+	if !ok {
+		return ErrNotFound
+	}
+	for _, e := range f.users {
+		if address != "" && e.ID != id && e.WalletAddress == address {
+			return ErrDuplicate
+		}
+	}
+	u.WalletAddress = address
+	f.users[id] = u
+	return nil
+}
+
+func (f *fakeStore) SetRole(_ context.Context, id, role string) error {
+	u, ok := f.users[id]
+	if !ok {
+		return ErrNotFound
+	}
+	u.Role = role
+	f.users[id] = u
+	return nil
+}
+
+func (f *fakeStore) SaveRefresh(_ context.Context, jti, userID string, _ time.Time) error {
+	f.refresh[jti] = struct {
+		userID  string
+		revoked bool
+	}{userID: userID}
+	return nil
+}
+
+func (f *fakeStore) UseRefresh(_ context.Context, jti string) (string, error) {
+	t, ok := f.refresh[jti]
+	if !ok || t.revoked {
+		return "", ErrNotFound
+	}
+	t.revoked = true
+	f.refresh[jti] = t
+	return t.userID, nil
+}
+
+func (f *fakeStore) RevokeRefresh(_ context.Context, jti, userID string) error {
+	t, ok := f.refresh[jti]
+	if !ok || t.userID != userID {
+		return ErrNotFound
+	}
+	t.revoked = true
+	f.refresh[jti] = t
+	return nil
+}
+
 var testSecret = []byte("test-secret")
 
-func do(t *testing.T, s *Server, path, body string) (int, map[string]any) {
+func newServer() *Server { return &Server{store: newFake(), secret: testSecret} }
+
+// call sends a request; who is "userID:role" for the gateway identity headers, or "" for anonymous.
+func call(t *testing.T, s *Server, method, path, who, body string) (int, map[string]any) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	if who != "" {
+		id, role, _ := strings.Cut(who, ":")
+		req.Header.Set("X-User-Id", id)
+		req.Header.Set("X-User-Role", role)
+	}
 	rec := httptest.NewRecorder()
 	s.routes().ServeHTTP(rec, req)
 	var out map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-		t.Fatalf("response not JSON: %v", err)
+		t.Fatalf("%s %s: response not JSON: %v", method, path, err)
 	}
 	return rec.Code, out
+}
+
+func post(t *testing.T, s *Server, path, body string) (int, map[string]any) {
+	return call(t, s, http.MethodPost, path, "", body)
 }
 
 func errCode(out map[string]any) string {
@@ -53,15 +138,34 @@ func errCode(out map[string]any) string {
 	return c
 }
 
-const validSignup = `{"email":"a@b.com","password":"password123","role":"wholesaler"}`
+func data(out map[string]any) map[string]any {
+	d, _ := out["data"].(map[string]any)
+	return d
+}
+
+const (
+	validSignup = `{"email":"a@b.com","phone":"+911234567890","password":"password123","role":"wholesaler"}`
+	validLogin  = `{"email":"a@b.com","password":"password123"}`
+	userA       = "id-a@b.com:wholesaler"
+)
+
+func login(t *testing.T, s *Server) map[string]any {
+	t.Helper()
+	post(t, s, "/auth/signup", validSignup)
+	code, out := post(t, s, "/auth/login", validLogin)
+	if code != 200 {
+		t.Fatalf("login: %d %v", code, out)
+	}
+	return data(out)
+}
 
 func TestSignup(t *testing.T) {
-	s := &Server{store: newFake(), secret: testSecret}
+	s := newServer()
 
-	if code, out := do(t, s, "/auth/signup", validSignup); code != 201 || out["error"] != nil {
+	if code, out := post(t, s, "/auth/signup", validSignup); code != 201 || out["error"] != nil {
 		t.Fatalf("signup: %d %v", code, out)
 	}
-	if code, out := do(t, s, "/auth/signup", validSignup); code != 409 || errCode(out) != "USER_EXISTS" {
+	if code, out := post(t, s, "/auth/signup", validSignup); code != 409 || errCode(out) != "USER_EXISTS" {
 		t.Fatalf("duplicate: %d %v", code, out)
 	}
 	bad := map[string]string{
@@ -72,34 +176,30 @@ func TestSignup(t *testing.T) {
 		`not json`: "INVALID_BODY",
 	}
 	for body, want := range bad {
-		if code, out := do(t, s, "/auth/signup", body); code != 400 || errCode(out) != want {
+		if code, out := post(t, s, "/auth/signup", body); code != 400 || errCode(out) != want {
 			t.Errorf("%s: got %d %q, want 400 %q", body, code, errCode(out), want)
 		}
 	}
 }
 
 func TestLogin(t *testing.T) {
-	s := &Server{store: newFake(), secret: testSecret}
-	do(t, s, "/auth/signup", `{"email":"a@b.com","phone":"+911234567890","password":"password123","role":"wholesaler"}`)
+	s := newServer()
+	post(t, s, "/auth/signup", validSignup)
 
-	for _, body := range []string{
-		`{"email":"a@b.com","password":"password123"}`,
-		`{"phone":"+911234567890","password":"password123"}`,
-	} {
-		code, out := do(t, s, "/auth/login", body)
+	for _, body := range []string{validLogin, `{"phone":"+911234567890","password":"password123"}`} {
+		code, out := post(t, s, "/auth/login", body)
 		if code != 200 {
 			t.Fatalf("login %s: %d %v", body, code, out)
 		}
-		data := out["data"].(map[string]any)
-		c, err := parseToken(testSecret, data["access_token"].(string), tokenAccess)
+		d := data(out)
+		c, err := parseToken(testSecret, d["accessToken"].(string), tokenAccess)
 		if err != nil || c.Subject != "id-a@b.com" || c.Role != "wholesaler" {
 			t.Fatalf("access token: %v %+v", err, c)
 		}
-		if _, err := parseToken(testSecret, data["refresh_token"].(string), tokenRefresh); err != nil {
+		if _, err := parseToken(testSecret, d["refreshToken"].(string), tokenRefresh); err != nil {
 			t.Fatalf("refresh token: %v", err)
 		}
-		// a refresh token must not pass as an access token
-		if _, err := parseToken(testSecret, data["refresh_token"].(string), tokenAccess); err == nil {
+		if _, err := parseToken(testSecret, d["refreshToken"].(string), tokenAccess); err == nil {
 			t.Fatal("refresh token accepted as access token")
 		}
 	}
@@ -108,11 +208,127 @@ func TestLogin(t *testing.T) {
 		`{"email":"a@b.com","password":"wrong-password"}`,
 		`{"email":"nobody@b.com","password":"password123"}`,
 	} {
-		if code, out := do(t, s, "/auth/login", body); code != 401 || errCode(out) != "INVALID_CREDENTIALS" {
+		if code, out := post(t, s, "/auth/login", body); code != 401 || errCode(out) != "INVALID_CREDENTIALS" {
 			t.Errorf("%s: %d %v", body, code, out)
 		}
 	}
-	if code, _ := do(t, s, "/auth/login", `{"password":"password123"}`); code != 400 {
+	if code, _ := post(t, s, "/auth/login", `{"password":"password123"}`); code != 400 {
 		t.Errorf("missing identifier: %d", code)
+	}
+}
+
+func TestRefreshRotatesAndRevokes(t *testing.T) {
+	s := newServer()
+	tokens := login(t, s)
+	body := `{"refreshToken":"` + tokens["refreshToken"].(string) + `"}`
+
+	code, out := post(t, s, "/auth/refresh", body)
+	if code != 200 || data(out)["accessToken"] == nil {
+		t.Fatalf("refresh: %d %v", code, out)
+	}
+	// The old refresh token was rotated out, so replaying it must fail.
+	if code, out := post(t, s, "/auth/refresh", body); code != 401 || errCode(out) != "INVALID_TOKEN" {
+		t.Fatalf("replayed refresh: %d %v", code, out)
+	}
+	// An access token is not a refresh token.
+	if code, _ := post(t, s, "/auth/refresh", `{"refreshToken":"`+tokens["accessToken"].(string)+`"}`); code != 401 {
+		t.Fatalf("access as refresh: %d", code)
+	}
+	// Expired refresh token.
+	expired, _, _ := issueToken(testSecret, User{ID: "id-a@b.com"}, tokenRefresh, -time.Minute)
+	if code, _ := post(t, s, "/auth/refresh", `{"refreshToken":"`+expired+`"}`); code != 401 {
+		t.Fatalf("expired refresh: %d", code)
+	}
+}
+
+func TestLogout(t *testing.T) {
+	s := newServer()
+	tokens := login(t, s)
+	body := `{"refreshToken":"` + tokens["refreshToken"].(string) + `"}`
+
+	if code, _ := call(t, s, "POST", "/auth/logout", "", body); code != 401 {
+		t.Fatalf("anonymous logout: %d", code)
+	}
+	if code, _ := call(t, s, "POST", "/auth/logout", "someone-else:retailer", body); code != 400 {
+		t.Fatalf("logout with another user's token: %d", code)
+	}
+	if code, out := call(t, s, "POST", "/auth/logout", userA, body); code != 200 {
+		t.Fatalf("logout: %d %v", code, out)
+	}
+	if code, _ := post(t, s, "/auth/refresh", body); code != 401 {
+		t.Fatalf("refresh after logout: %d", code)
+	}
+}
+
+func TestMe(t *testing.T) {
+	s := newServer()
+	login(t, s)
+	if code, _ := call(t, s, "GET", "/auth/me", "", ""); code != 401 {
+		t.Fatalf("anonymous me: %d", code)
+	}
+	code, out := call(t, s, "GET", "/auth/me", userA, "")
+	if code != 200 || data(out)["email"] != "a@b.com" {
+		t.Fatalf("me: %d %v", code, out)
+	}
+	if _, leaked := data(out)["passwordHash"]; leaked {
+		t.Fatal("password hash exposed")
+	}
+	if code, _ := call(t, s, "GET", "/auth/me", "ghost:retailer", ""); code != 404 {
+		t.Fatalf("deleted user me: %d", code)
+	}
+}
+
+func TestWallet(t *testing.T) {
+	s := newServer()
+	login(t, s)
+	post(t, s, "/auth/signup", `{"email":"r@b.com","password":"password123","role":"retailer"}`)
+	addr := "0xAbCdEf0123456789abcdef0123456789ABCDEF01"
+
+	code, out := call(t, s, "POST", "/auth/wallet/link", userA, `{"address":"`+addr+`"}`)
+	if code != 200 || data(out)["walletAddress"] != strings.ToLower(addr) {
+		t.Fatalf("link: %d %v", code, out)
+	}
+	// Same address in a different case is still the same wallet.
+	if code, out := call(t, s, "POST", "/auth/wallet/link", "id-r@b.com:retailer", `{"address":"`+strings.ToLower(addr)+`"}`); code != 409 || errCode(out) != "WALLET_IN_USE" {
+		t.Fatalf("link taken wallet: %d %v", code, out)
+	}
+	for _, bad := range []string{"0x123", "AbCdEf0123456789abcdef0123456789ABCDEF0101", "0xZZCdEf0123456789abcdef0123456789ABCDEF01"} {
+		if code, _ := call(t, s, "POST", "/auth/wallet/link", userA, `{"address":"`+bad+`"}`); code != 400 {
+			t.Errorf("invalid address %s: %d", bad, code)
+		}
+	}
+	if code, _ := call(t, s, "POST", "/auth/wallet/link", "", `{"address":"`+addr+`"}`); code != 401 {
+		t.Fatalf("anonymous link: %d", code)
+	}
+	if code, _ := call(t, s, "DELETE", "/auth/wallet/unlink", userA, ""); code != 200 {
+		t.Fatalf("unlink: %d", code)
+	}
+	if _, out := call(t, s, "GET", "/auth/me", userA, ""); data(out)["walletAddress"] != "" {
+		t.Fatalf("wallet still linked: %v", out)
+	}
+}
+
+func TestUsersAndRoles(t *testing.T) {
+	s := newServer()
+	login(t, s)
+
+	code, out := call(t, s, "GET", "/users/id-a@b.com", "x:retailer", "")
+	if code != 200 || data(out)["role"] != "wholesaler" || data(out)["email"] != nil {
+		t.Fatalf("get user: %d %v", code, out)
+	}
+	if code, _ := call(t, s, "GET", "/users/missing", "x:retailer", ""); code != 404 {
+		t.Fatalf("missing user: %d", code)
+	}
+	if code, _ := call(t, s, "PATCH", "/users/id-a@b.com/role", userA, `{"role":"admin"}`); code != 403 {
+		t.Fatalf("non-admin role change: %d", code)
+	}
+	if code, _ := call(t, s, "PATCH", "/users/id-a@b.com/role", "boss:admin", `{"role":"emperor"}`); code != 400 {
+		t.Fatalf("invalid role: %d", code)
+	}
+	if code, _ := call(t, s, "PATCH", "/users/id-a@b.com/role", "boss:admin", `{"role":"retailer"}`); code != 200 {
+		t.Fatalf("admin role change: %d", code)
+	}
+	if _, out := call(t, s, "GET", "/auth/me", userA, ""); data(out)["role"] != "retailer" {
+		t.Fatalf("role not changed: %v", out)
 	}
 }
