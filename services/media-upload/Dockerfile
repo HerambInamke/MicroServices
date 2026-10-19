@@ -6,6 +6,8 @@ COPY go.mod ./
 RUN go mod download || true
 
 COPY . .
+# go.sum is not committed yet; resolve it here until deps stabilise
+RUN go mod tidy
 
 RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o media-service .
 
