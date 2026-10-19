@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 type HealthResponse struct {
@@ -38,21 +40,33 @@ func connectStore(url string) *pgStore {
 	return nil
 }
 
+func requireEnv(name string) string {
+	v := os.Getenv(name)
+	if v == "" {
+		log.Fatalf("%s is required", name)
+	}
+	return v
+}
+
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8081"
 	}
-	secret := os.Getenv("JWT_SECRET")
-	if secret == "" {
-		log.Fatal("JWT_SECRET is required")
-	}
-	dbURL := os.Getenv("DB_URL")
-	if dbURL == "" {
-		log.Fatal("DB_URL is required")
+	secret := requireEnv("JWT_SECRET")
+	store := connectStore(requireEnv("DB_URL"))
+
+	if email, pw := os.Getenv("ADMIN_EMAIL"), os.Getenv("ADMIN_PASSWORD"); email != "" && pw != "" {
+		hash, err := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.DefaultCost)
+		if err != nil {
+			log.Fatalf("hashing admin password: %v", err)
+		}
+		if err := store.seedAdmin(context.Background(), email, string(hash)); err != nil {
+			log.Fatalf("seeding admin: %v", err)
+		}
 	}
 
-	srv := &Server{store: connectStore(dbURL), secret: []byte(secret)}
+	srv := &Server{store: store, secret: []byte(secret)}
 
 	log.Printf("Auth & Identity Service starting on port %s", port)
 	if err := http.ListenAndServe(":"+port, srv.routes()); err != nil {

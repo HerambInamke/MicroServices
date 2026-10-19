@@ -1,21 +1,22 @@
-const express = require('express');
+const mongoose = require('mongoose');
+const { createApp } = require('./app');
 
-const app = express();
 const PORT = process.env.PORT || 8082;
-const MONGO_URL = process.env.MONGO_URL || 'mongodb://root:rootpassword@mongodb:27017/admin';
+const MONGO_URL = process.env.MONGO_URL;
 
-app.use(express.json());
+if (!MONGO_URL) {
+  console.error('MONGO_URL is required');
+  process.exit(1);
+}
 
-// Health check endpoint required by CONTRIBUTING.md
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok', service: 'business-profile' });
-});
-
-// Future: Profile endpoints here
-// POST /profiles
-// GET /profiles/:id
-// PUT /profiles/:id
-
-app.listen(PORT, () => {
-  console.log(`Business Profile Service listening on port ${PORT}`);
-});
+mongoose
+  .connect(MONGO_URL)
+  .then(() => {
+    createApp().listen(PORT, () => {
+      console.log(`Business Profile Service listening on port ${PORT}`);
+    });
+  })
+  .catch((err) => {
+    console.error('could not connect to MongoDB:', err.message);
+    process.exit(1);
+  });
