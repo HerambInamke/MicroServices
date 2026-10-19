@@ -1,12 +1,12 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
 	"os"
-
-	"github.com/gorilla/mux"
+	"time"
 )
 
 type HealthResponse struct {
@@ -23,24 +23,39 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// connectStore retries because Postgres may still be starting when the container comes up.
+func connectStore(url string) *pgStore {
+	var err error
+	for i := 0; i < 30; i++ {
+		var s *pgStore
+		if s, err = newPGStore(context.Background(), url); err == nil {
+			return s
+		}
+		log.Printf("waiting for database: %v", err)
+		time.Sleep(2 * time.Second)
+	}
+	log.Fatalf("database unavailable: %v", err)
+	return nil
+}
+
 func main() {
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8081"
 	}
+	secret := os.Getenv("JWT_SECRET")
+	if secret == "" {
+		log.Fatal("JWT_SECRET is required")
+	}
+	dbURL := os.Getenv("DB_URL")
+	if dbURL == "" {
+		log.Fatal("DB_URL is required")
+	}
 
-	r := mux.NewRouter()
-
-	// Standard health check required by CONTRIBUTING.md
-	r.HandleFunc("/health", healthHandler).Methods("GET")
-
-	// Future: Auth and Wallet linking endpoints here
-	// POST /auth/register
-	// POST /auth/login
-	// POST /auth/wallet/link
+	srv := &Server{store: connectStore(dbURL), secret: []byte(secret)}
 
 	log.Printf("Auth & Identity Service starting on port %s", port)
-	if err := http.ListenAndServe(":"+port, r); err != nil {
+	if err := http.ListenAndServe(":"+port, srv.routes()); err != nil {
 		log.Fatalf("Server failed to start: %v", err)
 	}
 }
