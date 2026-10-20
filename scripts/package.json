@@ -1,0 +1,8 @@
+{
+  "name": "provenance-scripts",
+  "private": true,
+  "description": "Dev scripts; ethers signs provenance handoffs the way MetaMask would.",
+  "dependencies": {
+    "ethers": "6.13.4"
+  }
+}
