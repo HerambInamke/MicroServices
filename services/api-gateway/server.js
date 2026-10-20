@@ -20,6 +20,8 @@ const app = createApp({
     catalog: requireEnv('CATALOG_URL'),
     media: requireEnv('MEDIA_URL'),
     order: requireEnv('ORDER_URL'),
+    ledger: requireEnv('LEDGER_URL'),
+    qr: requireEnv('QR_URL'),
   },
 });
 

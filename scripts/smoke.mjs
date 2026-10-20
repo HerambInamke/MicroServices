@@ -2,6 +2,7 @@
 // Drives the Phase 1 flow through the API gateway only, as a real client would.
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
+import { Wallet, getBytes } from 'ethers';
 
 const BASE = process.env.GATEWAY_URL || 'http://localhost:3000/api/v1';
 const ADMIN = { email: process.env.ADMIN_EMAIL || 'admin@provenance.local', password: process.env.ADMIN_PASSWORD || 'admin-dev-password' };
@@ -125,3 +126,83 @@ if (payment.status === 503) {
 }
 
 console.log(`\nAll Phase 1 smoke checks passed. Order id: ${order.data.id}`);
+
+// --- Checkpoint D: provenance ledger ---
+// Each actor links a fresh wallet and signs like MetaMask's personal_sign over the offered dataHash.
+async function actor(role) {
+  const user = await signupAndLogin(role, `${role}-p2`);
+  const wallet = Wallet.createRandom();
+  const linked = await api('POST', '/auth/wallet/link', { token: user.token, body: { address: wallet.address } });
+  assert.equal(linked.status, 200, JSON.stringify(linked));
+  return { ...user, wallet };
+}
+
+const weaver = await actor('weaver');
+const dyeHouse = await actor('dye-house');
+const seller = await actor('wholesaler');
+const shop = await actor('retailer');
+
+assert.equal((await api('POST', '/pieces', { body: {} })).status, 401);
+const piece = await api('POST', '/pieces', { token: weaver.token, body: { productId: product.data.id, description: 'Smoke-test Banarasi saree' } });
+assert.equal(piece.status, 201, JSON.stringify(piece));
+const pieceId = piece.data.id;
+step(`weaver registered piece ${pieceId}`);
+
+// The weaver prints the tag at the loom: one code for the piece's whole life.
+const tag = await api('POST', `/qr/${pieceId}/generate`, { token: weaver.token });
+assert.equal(tag.status, 201, JSON.stringify(tag));
+assert.ok(Buffer.from(tag.data.pngBase64, 'base64').subarray(0, 4).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47])));
+assert.equal((await api('POST', `/qr/${pieceId}/generate`, { token: dyeHouse.token })).status, 403);
+step(`weaver generated QR code ${tag.data.code} (non-owner refused)`);
+
+async function handoff(from, to) {
+  const offer = await api('POST', `/pieces/${pieceId}/handoffs`, { token: from.token, body: { toUserId: to.id } });
+  assert.equal(offer.status, 201, JSON.stringify(offer));
+  const signature = await to.wallet.signMessage(getBytes(offer.data.pendingHandoff.dataHash));
+  const accepted = await api('POST', `/pieces/${pieceId}/handoffs/accept`, { token: to.token, body: { signature } });
+  assert.equal(accepted.status, 200, JSON.stringify(accepted));
+  assert.equal(accepted.data.actorAddress, to.wallet.address);
+  return accepted.data;
+}
+
+const first = await handoff(weaver, dyeHouse);
+step(`dye-house signed receipt on-chain (tx ${first.txHash})`);
+
+// Negative paths on the next offer: a stranger cannot accept, a forged signature is rejected.
+const offerToSeller = await api('POST', `/pieces/${pieceId}/handoffs`, { token: dyeHouse.token, body: { toUserId: seller.id } });
+assert.equal(offerToSeller.status, 201, JSON.stringify(offerToSeller));
+const forged = await Wallet.createRandom().signMessage(getBytes(offerToSeller.data.pendingHandoff.dataHash));
+assert.equal((await api('POST', `/pieces/${pieceId}/handoffs/accept`, { token: shop.token, body: { signature: forged } })).status, 403);
+assert.equal((await api('POST', `/pieces/${pieceId}/handoffs/accept`, { token: seller.token, body: { signature: forged } })).status, 403);
+step('stranger and forged-signature accepts rejected');
+
+await handoff(dyeHouse, seller);
+await handoff(seller, shop);
+step('wholesaler and retailer signed their handoffs');
+
+const history = await api('GET', `/pieces/${pieceId}/history`);
+assert.equal(history.status, 200);
+assert.deepEqual(history.data.events.map((e) => e.role), ['weaver', 'dye-house', 'wholesaler', 'retailer']);
+assert.equal(history.data.piece.currentOwnerId, shop.id);
+const verified = await api('GET', `/pieces/${pieceId}/verify`);
+assert.equal(verified.status, 200);
+assert.equal(verified.data.verified, true, JSON.stringify(verified.data));
+assert.equal(verified.data.onChainCount, 3);
+step('public history shows 4 events and matches the contract');
+
+// --- Checkpoint E: a consumer scans the tag ---
+const scanned = await api('GET', `/qr/${tag.data.code}/resolve`);
+assert.equal(scanned.status, 200, JSON.stringify(scanned));
+assert.equal(scanned.data.pieceId, pieceId);
+assert.equal(scanned.data.history.events.length, 4);
+assert.equal((await api('POST', `/qr/${tag.data.code}/scan-log`)).status, 201);
+assert.equal((await api('GET', '/qr/not-a-real-code/resolve')).status, 404);
+step('anonymous scan resolves the full history; unknown code is 404');
+
+const reissue = await api('POST', `/qr/${pieceId}/generate`, { token: shop.token });
+assert.equal(reissue.status, 200, JSON.stringify(reissue));
+assert.equal(reissue.data.code, tag.data.code);
+assert.equal((await api('POST', `/qr/${pieceId}/generate`, { token: weaver.token })).status, 403);
+step('new owner gets the same code; the weaver no longer can');
+
+console.log(`\nAll Phase 2 smoke checks passed. Piece id: ${pieceId}, QR code: ${tag.data.code}`);
