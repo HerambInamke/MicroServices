@@ -267,6 +267,29 @@ services:
       provenance-ledger:
         condition: service_started
 
+  weaviate:
+    image: cr.weaviate.io/semitechnologies/weaviate:1.26.6
+    environment:
+      AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'true'
+      PERSISTENCE_DATA_PATH: /var/lib/weaviate
+      DEFAULT_VECTORIZER_MODULE: none
+      ENABLE_MODULES: ''
+      CLUSTER_HOSTNAME: node1
+    networks:
+      - provenance_net
+
+  counterfeit-detection:
+    <<: *app
+    build:
+      context: ./services/counterfeit-detection
+    environment:
+      - PORT=8088
+      - WEAVIATE_URL=http://weaviate:8080
+      # Empty uses the calibrated default in app.py.
+      - MATCH_THRESHOLD=${MATCH_THRESHOLD:-}
+    depends_on:
+      - weaviate
+
 networks:
   provenance_net:
     driver: bridge
