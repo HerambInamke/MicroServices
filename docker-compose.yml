@@ -199,6 +199,7 @@ services:
       - DB_URL=postgresql+psycopg://root:rootpassword@postgres:5432/order_db
       - KAFKA_BROKERS=kafka:9092
       - CATALOG_URL=http://wholesale-catalog:8083
+      - INVENTORY_URL=http://inventory-sync:8090
       # Razorpay test-mode credentials; payments return 503 until these are set (see .env.example).
       - RAZORPAY_KEY_ID=${RAZORPAY_KEY_ID:-}
       - RAZORPAY_KEY_SECRET=${RAZORPAY_KEY_SECRET:-}
@@ -319,6 +320,23 @@ services:
     depends_on:
       - elasticsearch
       - kafka
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    networks:
+      - provenance_net
+
+  inventory-sync:
+    <<: *app
+    build:
+      context: ./services/inventory-sync
+    environment:
+      - PORT=8090
+      - REDIS_URL=redis://redis:6379/0
+      - CATALOG_URL=http://wholesale-catalog:8083
+    depends_on:
+      - redis
 
 networks:
   provenance_net:
