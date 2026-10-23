@@ -15,7 +15,13 @@ const ROUTES = [
   ['/pieces', 'ledger'],
   ['/qr', 'qr'],
   ['/designs', 'counterfeit'],
+  ['/search', 'search'],
+  ['/inventory', 'inventory'],
+  ['/analytics', 'analytics'],
 ];
+
+// Service-to-service endpoints that must never be reachable from outside.
+const INTERNAL = [/^\/inventory\/(reserve|release)\/?$/];
 
 // Routes reachable without a token. Everything else needs a valid access token.
 const PUBLIC = [
@@ -27,7 +33,10 @@ const PUBLIC = [
   ['GET', /^\/pieces(\/|$)/], // piece, history and on-chain verify are public by design
   ['GET', /^\/qr\/[^/]+\/resolve$/], // anyone scanning a tag, no login
   ['POST', /^\/qr\/[^/]+\/scan-log$/],
-  ['GET', /^\/designs\/[^/]+$/], // reading a design is public; registering and matching need a token
+  ['GET', /^\/designs(\/[^/]+)?$/], // reading designs is public; registering and matching need a token
+  ['GET', /^\/search(\/suggest)?$/],
+  ['GET', /^\/inventory\/[^/]+$/],
+  ['GET', /^\/analytics\/trends$/],
   ['POST', /^\/payments\/webhook$/], // verified by Razorpay's signature, not a JWT
 ];
 
@@ -126,7 +135,7 @@ function createApp({ services, secret, rateLimitPerMinute = 300 }) {
   app.use('/api/v1', (req, res) => {
     const path = req.path;
     const key = serviceFor(path);
-    if (!key || !services[key]) return fail(res, 404, 'NOT_FOUND', 'no such route');
+    if (!key || !services[key] || INTERNAL.some((re) => re.test(path))) return fail(res, 404, 'NOT_FOUND', 'no such route');
 
     let identity;
     try {
