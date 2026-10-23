@@ -2,6 +2,7 @@
 // Drives the Phase 1 flow through the API gateway only, as a real client would.
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
+import zlib from 'node:zlib';
 import { Wallet, getBytes } from 'ethers';
 
 const BASE = process.env.GATEWAY_URL || 'http://localhost:3000/api/v1';
@@ -206,3 +207,64 @@ assert.equal((await api('POST', `/qr/${pieceId}/generate`, { token: weaver.token
 step('new owner gets the same code; the weaver no longer can');
 
 console.log(`\nAll Phase 2 smoke checks passed. Piece id: ${pieceId}, QR code: ${tag.data.code}`);
+
+// --- Checkpoint F: counterfeit detection ---
+// Real decodable PNGs so CLIP can embed them: a red/gold checked pattern and an unrelated blue gradient.
+function pngOf(size, pixel) {
+  const raw = Buffer.alloc(size * (size * 3 + 1));
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) raw.set(pixel(x, y), y * (size * 3 + 1) + 1 + x * 3);
+  }
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(zlib.crc32(Buffer.concat([Buffer.from(type), data])));
+    return Buffer.concat([len, Buffer.from(type), data, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr.set([8, 2, 0, 0, 0], 8); // 8-bit RGB
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+const sareeDesign = pngOf(224, (x, y) => ((x >> 4) + (y >> 4)) % 2 ? [180, 20, 40] : [220, 170, 40]);
+const unrelated = pngOf(224, (x, y) => [0, x, 255 - y]);
+const pngForm = (bytes) => {
+  const f = new FormData();
+  f.append('file', new Blob([bytes], { type: 'image/png' }), 'design.png');
+  return f;
+};
+
+const designMedia = await api('POST', '/media/upload', { token: wholesaler.token, form: pngForm(sareeDesign) });
+assert.equal(designMedia.status, 201, JSON.stringify(designMedia));
+const design = await api('POST', '/designs', { token: wholesaler.token, body: { productId: product.data.id, mediaId: designMedia.data.id } });
+assert.equal(design.status, 201, JSON.stringify(design));
+assert.equal((await api('GET', `/designs/${design.data.id}`)).data.productId, product.data.id);
+assert.equal((await api('POST', '/designs', { token: retailer.token, body: { productId: product.data.id, mediaId: designMedia.data.id } })).status, 403);
+step(`wholesaler registered design ${design.data.id} (retailer refused, public read)`);
+
+// shortcut: matches the identical image; switch to a transformed copy once the threshold is calibrated on real photos.
+const hit = await api('POST', '/designs/match', { token: retailer.token, form: pngForm(sareeDesign) });
+assert.equal(hit.status, 200, JSON.stringify(hit));
+assert.equal(hit.data.match, true, JSON.stringify(hit.data));
+assert.equal(hit.data.results[0].design.id, design.data.id);
+const miss = await api('POST', '/designs/match', { token: retailer.token, form: pngForm(unrelated) });
+assert.equal(miss.status, 200, JSON.stringify(miss));
+assert.equal(miss.data.match, false, JSON.stringify(miss.data));
+assert.equal((await api('POST', '/designs/match', { form: pngForm(sareeDesign) })).status, 401);
+step(`photo matched its design (${hit.data.results[0].similarity}); unrelated photo did not (${miss.data.results[0]?.similarity})`);
+
+const copier = await signupAndLogin('wholesaler', 'copier');
+const copierProduct = await api('POST', '/products', {
+  token: copier.token,
+  body: { name: 'Copied Saree', categoryId: category.data.id, moq: 1, basePrice: 100 },
+});
+assert.equal(copierProduct.status, 201, JSON.stringify(copierProduct));
+const copierMedia = await api('POST', '/media/upload', { token: copier.token, form: pngForm(sareeDesign) });
+const copied = await api('POST', '/designs', { token: copier.token, body: { productId: copierProduct.data.id, mediaId: copierMedia.data.id } });
+assert.equal(copied.status, 409, JSON.stringify(copied));
+assert.equal(copied.error.code, 'DESIGN_CONFLICT');
+step('another wholesaler registering the same image is refused (409)');
+
+console.log(`\nAll Phase 3 smoke checks passed. Design id: ${design.data.id}`);

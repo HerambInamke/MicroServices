@@ -14,6 +14,7 @@ const ROUTES = [
   ['/payments', 'order'],
   ['/pieces', 'ledger'],
   ['/qr', 'qr'],
+  ['/designs', 'counterfeit'],
 ];
 
 // Routes reachable without a token. Everything else needs a valid access token.
@@ -26,6 +27,7 @@ const PUBLIC = [
   ['GET', /^\/pieces(\/|$)/], // piece, history and on-chain verify are public by design
   ['GET', /^\/qr\/[^/]+\/resolve$/], // anyone scanning a tag, no login
   ['POST', /^\/qr\/[^/]+\/scan-log$/],
+  ['GET', /^\/designs\/[^/]+$/], // reading a design is public; registering and matching need a token
   ['POST', /^\/payments\/webhook$/], // verified by Razorpay's signature, not a JWT
 ];
 

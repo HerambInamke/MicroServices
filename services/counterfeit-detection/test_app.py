@@ -16,7 +16,7 @@ class FakeEmbedder:
 
 
 def test_health():
-    client = TestClient(create_app(FakeStore(), FakeEmbedder()))
+    client = TestClient(create_app(FakeStore(), FakeEmbedder(), None, None))
     res = client.get("/health")
     assert res.status_code == 200
     assert res.json() == {"status": "ok", "service": "counterfeit-detection"}
