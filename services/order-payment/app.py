@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Literal
+from uuid import uuid4
 
 from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.concurrency import run_in_threadpool
@@ -15,7 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from clients import CatalogError, PaymentProviderError
+from clients import CatalogError, InventoryError, PaymentProviderError
 from models import Base, Order, OrderItem, Payment
 
 log = logging.getLogger("order-payment")
@@ -87,8 +88,9 @@ class StatusChange(BaseModel):
     status: Literal["confirmed", "cancelled", "shipped", "delivered"]
 
 
-def create_app(session_factory: sessionmaker, catalog, publisher, razorpay=None, webhook_secret: str = "") -> FastAPI:
-    """razorpay/webhook_secret may be absent: payment endpoints then answer 503 instead of failing."""
+def create_app(session_factory: sessionmaker, catalog, publisher, razorpay=None, webhook_secret: str = "", *, inventory) -> FastAPI:
+    """razorpay/webhook_secret may be absent: payment endpoints then answer 503 instead of failing.
+    inventory is required: an order is never placed without a stock decision."""
     app = FastAPI(title="Order & Payment Service", description="Provenance Order/Payment API")
 
     def db():
@@ -147,14 +149,23 @@ def create_app(session_factory: sessionmaker, catalog, publisher, razorpay=None,
             raise ApiError(422, "MIXED_WHOLESALERS", "all items in an order must come from one wholesaler")
 
         order = Order(
+            id=str(uuid4()),  # inventory keys the reservation by it, before the row exists
             retailer_id=who.id,
             wholesaler_id=wholesalers.pop(),
             status="placed",
             total=sum((q.total for q in quotes), Decimal("0")),
             items=[OrderItem(product_id=q.product_id, qty=q.qty, unit_price=q.unit_price) for q in quotes],
         )
+        try:
+            inventory.reserve(order.id, [(q.product_id, q.qty) for q in quotes])
+        except InventoryError as e:
+            raise ApiError(e.status, e.code, e.message) from e
         session.add(order)
-        session.commit()
+        try:
+            session.commit()
+        except Exception:
+            inventory.release(order.id)
+            raise
         payload = event_payload(order) | {
             "items": [{"productId": q.product_id, "qty": q.qty, "unitPrice": str(q.unit_price)} for q in quotes]
         }
@@ -211,6 +222,8 @@ def create_app(session_factory: sessionmaker, catalog, publisher, razorpay=None,
         previous = order.status
         order.status = req.status
         session.commit()
+        if order.status == "cancelled":
+            inventory.release(order.id)
         publisher.publish("order.status.changed", "OrderStatusChanged", order.id, event_payload(order) | {"previousStatus": previous})
         return ok(order_view(order))
 

@@ -138,6 +138,10 @@ services:
       - MEDIA_URL=http://media-upload:8085
       - LEDGER_URL=http://provenance-ledger:8086
       - QR_URL=http://qr-verification:8087
+      - COUNTERFEIT_URL=http://counterfeit-detection:8088
+      - SEARCH_URL=http://search:8089
+      - INVENTORY_URL=http://inventory-sync:8090
+      - ANALYTICS_URL=http://analytics:8091
     depends_on:
       - auth-identity
       - business-profile
@@ -146,6 +150,10 @@ services:
       - media-upload
       - provenance-ledger
       - qr-verification
+      - counterfeit-detection
+      - search
+      - inventory-sync
+      - analytics
 
   auth-identity:
     <<: *app
@@ -197,6 +205,7 @@ services:
       - DB_URL=postgresql+psycopg://root:rootpassword@postgres:5432/order_db
       - KAFKA_BROKERS=kafka:9092
       - CATALOG_URL=http://wholesale-catalog:8083
+      - INVENTORY_URL=http://inventory-sync:8090
       # Razorpay test-mode credentials; payments return 503 until these are set (see .env.example).
       - RAZORPAY_KEY_ID=${RAZORPAY_KEY_ID:-}
       - RAZORPAY_KEY_SECRET=${RAZORPAY_KEY_SECRET:-}
@@ -285,10 +294,80 @@ services:
     environment:
       - PORT=8088
       - WEAVIATE_URL=http://weaviate:8080
+      - CATALOG_URL=http://wholesale-catalog:8083
+      - MEDIA_URL=http://media-upload:8085
       # Empty uses the calibrated default in app.py.
       - MATCH_THRESHOLD=${MATCH_THRESHOLD:-}
     depends_on:
       - weaviate
+      - wholesale-catalog
+      - media-upload
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    networks:
+      - provenance_net
+
+  search:
+    <<: *app
+    build:
+      context: ./services/search
+    environment:
+      - PORT=8089
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - KAFKA_BROKERS=kafka:9092
+      - CATALOG_URL=http://wholesale-catalog:8083
+      - PROFILE_URL=http://business-profile:8082
+      - COUNTERFEIT_URL=http://counterfeit-detection:8088
+    depends_on:
+      - elasticsearch
+      - kafka
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    networks:
+      - provenance_net
+
+  inventory-sync:
+    <<: *app
+    build:
+      context: ./services/inventory-sync
+    environment:
+      - PORT=8090
+      - REDIS_URL=redis://redis:6379/0
+      - CATALOG_URL=http://wholesale-catalog:8083
+    depends_on:
+      - redis
+
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhousepassword
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    networks:
+      - provenance_net
+
+  analytics:
+    <<: *app
+    build:
+      context: ./services/analytics
+    environment:
+      - PORT=8091
+      - CLICKHOUSE_URL=clickhouse://default:clickhousepassword@clickhouse:8123/default
+      - KAFKA_BROKERS=kafka:9092
+      - CATALOG_URL=http://wholesale-catalog:8083
+    depends_on:
+      - clickhouse
+      - kafka
 
 networks:
   provenance_net:

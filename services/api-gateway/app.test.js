@@ -25,7 +25,7 @@ before(async () => {
     });
   });
   upstreamURL = `http://127.0.0.1:${await listen(upstream)}`;
-  const services = { auth: upstreamURL, profile: upstreamURL, catalog: upstreamURL, media: upstreamURL, order: 'http://127.0.0.1:1', ledger: upstreamURL, qr: upstreamURL };
+  const services = { auth: upstreamURL, profile: upstreamURL, catalog: upstreamURL, media: upstreamURL, order: 'http://127.0.0.1:1', ledger: upstreamURL, qr: upstreamURL, counterfeit: upstreamURL, search: upstreamURL, inventory: upstreamURL, analytics: upstreamURL };
   gateway = http.createServer(createApp({ services, secret: SECRET, rateLimitPerMinute: 1000 }));
   base = `http://127.0.0.1:${await listen(gateway)}`;
 });
@@ -100,6 +100,24 @@ test('public GET is open but writes need a token', async () => {
   assert.equal((await get('/api/v1/qr/abc/resolve')).status, 201);
   assert.equal((await fetch(`${base}/api/v1/qr/abc/scan-log`, { method: 'POST' })).status, 201);
   assert.equal((await fetch(`${base}/api/v1/qr/p1/generate`, { method: 'POST' })).status, 401);
+  assert.equal((await get('/api/v1/designs/d1')).status, 201);
+  assert.equal((await fetch(`${base}/api/v1/designs`, { method: 'POST' })).status, 401);
+  assert.equal((await fetch(`${base}/api/v1/designs/match`, { method: 'POST' })).status, 401);
+  assert.equal((await get('/api/v1/designs')).status, 201);
+  assert.equal((await get('/api/v1/search?q=silk')).status, 201);
+  assert.equal((await get('/api/v1/search/suggest?q=si')).status, 201);
+  assert.equal((await fetch(`${base}/api/v1/search/reindex`, { method: 'POST' })).status, 401);
+  assert.equal((await get('/api/v1/inventory/5')).status, 201);
+  assert.equal((await fetch(`${base}/api/v1/inventory/5`, { method: 'PATCH' })).status, 401);
+  assert.equal((await get('/api/v1/analytics/trends')).status, 201);
+  assert.equal((await get('/api/v1/analytics/seller/w1/summary')).status, 401);
+});
+
+test('internal inventory endpoints are not routed, even with a token', async () => {
+  for (const path of ['/api/v1/inventory/reserve', '/api/v1/inventory/release', '/api/v1/inventory/reserve/']) {
+    const r = await fetch(`${base}${path}`, { method: 'POST', headers: { authorization: `Bearer ${access}` } });
+    assert.equal(r.status, 404, path);
+  }
 });
 
 test('unknown route is 404 and an unreachable service is 502', async () => {

@@ -2,6 +2,7 @@
 // Drives the Phase 1 flow through the API gateway only, as a real client would.
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
+import zlib from 'node:zlib';
 import { Wallet, getBytes } from 'ethers';
 
 const BASE = process.env.GATEWAY_URL || 'http://localhost:3000/api/v1';
@@ -206,3 +207,131 @@ assert.equal((await api('POST', `/qr/${pieceId}/generate`, { token: weaver.token
 step('new owner gets the same code; the weaver no longer can');
 
 console.log(`\nAll Phase 2 smoke checks passed. Piece id: ${pieceId}, QR code: ${tag.data.code}`);
+
+// --- Checkpoint F: counterfeit detection ---
+// Needs an empty design registry: there is no design delete, so a re-run's image conflicts with the last run's.
+// Reset it with `docker compose up -d --force-recreate weaviate counterfeit-detection`.
+// Real decodable PNGs so CLIP can embed them: a red/gold checked pattern and an unrelated blue gradient.
+function pngOf(size, pixel) {
+  const raw = Buffer.alloc(size * (size * 3 + 1));
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) raw.set(pixel(x, y), y * (size * 3 + 1) + 1 + x * 3);
+  }
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4);
+    len.writeUInt32BE(data.length);
+    const crc = Buffer.alloc(4);
+    crc.writeUInt32BE(zlib.crc32(Buffer.concat([Buffer.from(type), data])));
+    return Buffer.concat([len, Buffer.from(type), data, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr.set([8, 2, 0, 0, 0], 8); // 8-bit RGB
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+const sareeDesign = pngOf(224, (x, y) => ((x >> 4) + (y >> 4)) % 2 ? [180, 20, 40] : [220, 170, 40]);
+const unrelated = pngOf(224, (x, y) => [0, x, 255 - y]);
+const pngForm = (bytes) => {
+  const f = new FormData();
+  f.append('file', new Blob([bytes], { type: 'image/png' }), 'design.png');
+  return f;
+};
+
+const designMedia = await api('POST', '/media/upload', { token: wholesaler.token, form: pngForm(sareeDesign) });
+assert.equal(designMedia.status, 201, JSON.stringify(designMedia));
+const design = await api('POST', '/designs', { token: wholesaler.token, body: { productId: product.data.id, mediaId: designMedia.data.id } });
+assert.equal(design.status, 201, JSON.stringify(design));
+assert.equal((await api('GET', `/designs/${design.data.id}`)).data.productId, product.data.id);
+assert.equal((await api('POST', '/designs', { token: retailer.token, body: { productId: product.data.id, mediaId: designMedia.data.id } })).status, 403);
+step(`wholesaler registered design ${design.data.id} (retailer refused, public read)`);
+
+// shortcut: matches the identical image; switch to a transformed copy once the threshold is calibrated on real photos.
+const hit = await api('POST', '/designs/match', { token: retailer.token, form: pngForm(sareeDesign) });
+assert.equal(hit.status, 200, JSON.stringify(hit));
+assert.equal(hit.data.match, true, JSON.stringify(hit.data));
+assert.equal(hit.data.results[0].design.id, design.data.id);
+const miss = await api('POST', '/designs/match', { token: retailer.token, form: pngForm(unrelated) });
+assert.equal(miss.status, 200, JSON.stringify(miss));
+assert.equal(miss.data.match, false, JSON.stringify(miss.data));
+assert.equal((await api('POST', '/designs/match', { form: pngForm(sareeDesign) })).status, 401);
+step(`photo matched its design (${hit.data.results[0].similarity}); unrelated photo did not (${miss.data.results[0]?.similarity})`);
+
+const copier = await signupAndLogin('wholesaler', 'copier');
+const copierProduct = await api('POST', '/products', {
+  token: copier.token,
+  body: { name: 'Copied Saree', categoryId: category.data.id, moq: 1, basePrice: 100 },
+});
+assert.equal(copierProduct.status, 201, JSON.stringify(copierProduct));
+const copierMedia = await api('POST', '/media/upload', { token: copier.token, form: pngForm(sareeDesign) });
+const copied = await api('POST', '/designs', { token: copier.token, body: { productId: copierProduct.data.id, mediaId: copierMedia.data.id } });
+assert.equal(copied.status, 409, JSON.stringify(copied));
+assert.equal(copied.error.code, 'DESIGN_CONFLICT');
+step('another wholesaler registering the same image is refused (409)');
+
+console.log(`\nAll Phase 3 smoke checks passed. Design id: ${design.data.id}`);
+
+// --- Phase 4: search, inventory, analytics ---
+// Search and analytics follow Kafka, so they are eventually consistent: poll until the change shows up.
+async function eventually(what, check, timeoutMs = 60_000) {
+  const until = Date.now() + timeoutMs;
+  for (;;) {
+    const value = await check();
+    if (value) return value;
+    if (Date.now() > until) assert.fail(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+}
+
+const paithaniName = `Paithani ${run}`;
+const paithani = await api('POST', '/products', {
+  token: wholesaler.token,
+  body: { name: paithaniName, description: 'Handwoven silk', categoryId: category.data.id, moq: 1, basePrice: 1800 },
+});
+assert.equal(paithani.status, 201, JSON.stringify(paithani));
+const found = await eventually('product in search', async () => {
+  const r = await api('GET', `/search?q=${encodeURIComponent(paithaniName)}&type=product`);
+  return r.data?.find((d) => d.id === String(paithani.data.id));
+});
+assert.equal(found.wholesalerId, wholesaler.id);
+assert.ok((await api('GET', `/search/suggest?q=${encodeURIComponent(paithaniName.slice(0, 6))}`)).data.length > 0);
+step(`new product searchable via product.created (${paithaniName})`);
+
+assert.equal((await api('POST', '/search/reindex', { token: wholesaler.token })).status, 403);
+const reindex = await api('POST', '/search/reindex', { token: adminToken });
+assert.equal(reindex.status, 200, JSON.stringify(reindex));
+assert.ok(reindex.data.products >= 2 && reindex.data.designs >= 1, JSON.stringify(reindex.data));
+const designHit = await api('GET', `/search?q=${encodeURIComponent('Kanjeevaram')}&type=design`);
+assert.ok(designHit.data.some((d) => d.id === design.data.id), JSON.stringify(designHit.data));
+step(`admin reindex (${JSON.stringify(reindex.data)}); designs searchable by product name`);
+
+const pid = paithani.data.id;
+assert.equal((await api('PATCH', `/inventory/${pid}`, { token: retailer.token, body: { warehouseId: 'surat', delta: 10 } })).status, 403);
+const stocked = await api('PATCH', `/inventory/${pid}`, { token: wholesaler.token, body: { warehouseId: 'surat', delta: 10 } });
+assert.equal(stocked.status, 200, JSON.stringify(stocked));
+assert.equal(stocked.data.total, 10);
+const firstBuy = await api('POST', '/orders', { token: retailer.token, body: { items: [{ productId: pid, qty: 6 }] } });
+assert.equal(firstBuy.status, 201, JSON.stringify(firstBuy));
+const oversell = await api('POST', '/orders', { token: retailer.token, body: { items: [{ productId: pid, qty: 6 }] } });
+assert.equal(oversell.status, 409, JSON.stringify(oversell));
+assert.equal(oversell.error.code, 'OUT_OF_STOCK');
+assert.equal((await api('GET', `/inventory/${pid}`)).data.total, 4);
+assert.equal((await api('POST', '/inventory/reserve', { token: adminToken, body: { orderId: 'x', items: [{ productId: pid, qty: 1 }] } })).status, 404);
+step('stock 10: order of 6 placed, second order of 6 refused (409); reserve not reachable from outside');
+
+const cancelled = await api('PATCH', `/orders/${firstBuy.data.id}/status`, { token: wholesaler.token, body: { status: 'cancelled' } });
+assert.equal(cancelled.status, 200, JSON.stringify(cancelled));
+assert.equal((await api('GET', `/inventory/${pid}`)).data.total, 10);
+step('cancelling the order released its stock');
+
+assert.equal((await api('GET', `/analytics/seller/${wholesaler.id}/summary`, { token: retailer.token })).status, 403);
+const summary = await eventually('seller summary', async () => {
+  const r = await api('GET', `/analytics/seller/${wholesaler.id}/summary?period=7d`, { token: wholesaler.token });
+  return r.data?.topProducts.some((p) => p.productId === pid) && r.data.ordersByStatus.cancelled >= 1 && r.data;
+});
+const trends = await api('GET', `/analytics/trends?category=${category.data.id}&period=30d`);
+assert.equal(trends.status, 200, JSON.stringify(trends));
+assert.ok(trends.data.weeks.some((w) => w.qty >= 6), JSON.stringify(trends.data));
+step(`seller summary and public trends reflect the orders (${JSON.stringify(summary.ordersByStatus)})`);
+
+console.log('\nAll Phase 4 smoke checks passed.');

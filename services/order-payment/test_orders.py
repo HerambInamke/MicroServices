@@ -14,7 +14,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 from app import create_app
-from clients import CatalogError, PaymentProviderError, Quote, envelope
+from clients import CatalogError, InventoryError, PaymentProviderError, Quote, envelope
 from models import Base
 
 WEBHOOK_SECRET = "whsec_test"
@@ -34,6 +34,29 @@ class FakeCatalog:
         if qty < moq:
             raise CatalogError(422, "BELOW_MOQ", f"minimum order quantity for this product is {moq}")
         return Quote(product_id, wholesaler, qty, price, price * qty)
+
+
+class FakeInventory:
+    """Stock per product id; products not listed are untracked."""
+
+    def __init__(self):
+        self.stock, self.reservations, self.down = {}, {}, False
+
+    def reserve(self, order_id, lines):
+        if self.down:
+            raise InventoryError(502, "INVENTORY_UNAVAILABLE", "could not reach inventory")
+        for pid, qty in lines:
+            if self.stock.get(pid, qty) < qty:
+                raise InventoryError(409, "OUT_OF_STOCK", f"not enough stock for product {pid}")
+        for pid, qty in lines:
+            if pid in self.stock:
+                self.stock[pid] -= qty
+        self.reservations[order_id] = lines
+
+    def release(self, order_id):
+        for pid, qty in self.reservations.pop(order_id, []):
+            if pid in self.stock:
+                self.stock[pid] += qty
 
 
 class FakePublisher:
@@ -79,10 +102,10 @@ def ctx(engine):
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
     publisher, razorpay = FakePublisher(), FakeRazorpay()
-    catalog = FakeCatalog()
-    app = create_app(sessionmaker(engine, expire_on_commit=False), catalog, publisher, razorpay, WEBHOOK_SECRET)
+    catalog, inventory = FakeCatalog(), FakeInventory()
+    app = create_app(sessionmaker(engine, expire_on_commit=False), catalog, publisher, razorpay, WEBHOOK_SECRET, inventory=inventory)
     client = TestClient(app)
-    return {"client": client, "publisher": publisher, "razorpay": razorpay, "catalog": catalog, "engine": engine}
+    return {"client": client, "publisher": publisher, "razorpay": razorpay, "catalog": catalog, "inventory": inventory, "engine": engine}
 
 
 def as_user(user_id, role):
@@ -145,6 +168,30 @@ def test_place_order_requires_retailer_and_catalog(ctx):
     ctx["catalog"].down = True
     res = place(c)
     assert res.status_code == 502 and code(res) == "CATALOG_UNAVAILABLE"
+
+
+def test_stock_is_reserved_and_released_on_cancel(ctx):
+    c, inventory = ctx["client"], ctx["inventory"]
+    inventory.stock = {1: 15}
+    first = place(c, [{"productId": 1, "qty": 10}])
+    assert first.status_code == 201
+    assert inventory.stock[1] == 5 and first.json()["data"]["id"] in inventory.reservations
+
+    res = place(c, [{"productId": 1, "qty": 10}])
+    assert (res.status_code, code(res)) == (409, "OUT_OF_STOCK")
+    assert len(ctx["publisher"].events) == 1  # only the first order was published
+
+    order_id = first.json()["data"]["id"]
+    assert c.patch(f"/orders/{order_id}/status", json={"status": "cancelled"}, headers=WHOLESALER).status_code == 200
+    assert inventory.stock[1] == 15
+    assert place(c, [{"productId": 1, "qty": 10}]).status_code == 201
+
+
+def test_inventory_down_places_nothing(ctx):
+    ctx["inventory"].down = True
+    res = place(ctx["client"])
+    assert (res.status_code, code(res)) == (502, "INVENTORY_UNAVAILABLE")
+    assert ctx["client"].get("/orders", headers=RETAILER).json()["meta"]["total"] == 0
 
 
 def test_order_detail_visible_to_parties_only(ctx):
@@ -257,7 +304,7 @@ def test_webhook_ignores_unknown_and_unrelated_events(ctx):
 
 def test_payments_not_configured(engine):
     Base.metadata.create_all(engine)
-    app = create_app(sessionmaker(engine), FakeCatalog(), FakePublisher(), razorpay=None, webhook_secret="")
+    app = create_app(sessionmaker(engine), FakeCatalog(), FakePublisher(), razorpay=None, webhook_secret="", inventory=FakeInventory())
     c = TestClient(app)
     order_id = place(c).json()["data"]["id"]
     res = c.post(f"/orders/{order_id}/payment", headers=RETAILER)
