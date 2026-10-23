@@ -55,6 +55,10 @@ class FakeStore:
         row = self.rows.get(design_id)
         return row and row[0]
 
+    def list_page(self, page, limit):
+        rows = [d for d, _ in self.rows.values()]
+        return rows[(page - 1) * limit : page * limit], len(rows)
+
     def nearest(self, vector, limit, exclude_wholesaler=None):
         hits = [(d, sum(a * b for a, b in zip(v, vector))) for d, v in self.rows.values() if d["wholesalerId"] != exclude_wholesaler]
         return sorted(hits, key=lambda h: -h[1])[:limit]
@@ -165,6 +169,15 @@ def test_conflict_with_another_wholesaler_but_not_with_yourself(ctx):
     assert register(client, W2, 2, media.add("w2", "blue")).status_code == 201
 
 
+def test_list_designs_pages(ctx):
+    client, _, _, media = ctx
+    for tag in ("red", "blue", "green"):
+        register(client, W1 if tag != "blue" else W2, 1 if tag != "blue" else 2, media.add("w1" if tag != "blue" else "w2", tag))
+    body = client.get("/designs", params={"limit": 2}).json()
+    assert len(body["data"]) == 2 and body["meta"] == {"page": 1, "limit": 2, "total": 3, "hasMore": True}
+    assert client.get("/designs", params={"limit": 101}).status_code == 400
+
+
 def test_undecodable_reference_is_422(ctx):
     client, _, _, media = ctx
     res = register(client, W1, 1, media.add("w1", "garbage"))
@@ -219,6 +232,8 @@ def test_weaviate_store_insert_get_nearest():
         b = store.insert(base | {"wholesalerId": "11111111-aaaa-bbbb-cccc-000000000002"}, unit(VECTORS["blue"]))
         assert store.get(a["id"]) == a
         assert store.get(str(uuid.uuid4())) is None
+        rows, total = store.list_page(1, 1)
+        assert total == 2 and len(rows) == 1 and rows[0]["id"] in (a["id"], b["id"])
 
         hits = store.nearest(unit(VECTORS["red-crop"]), 2)
         assert [d["id"] for d, _ in hits] == [a["id"], b["id"]]

@@ -296,6 +296,30 @@ services:
       - wholesale-catalog
       - media-upload
 
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    networks:
+      - provenance_net
+
+  search:
+    <<: *app
+    build:
+      context: ./services/search
+    environment:
+      - PORT=8089
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - KAFKA_BROKERS=kafka:9092
+      - CATALOG_URL=http://wholesale-catalog:8083
+      - PROFILE_URL=http://business-profile:8082
+      - COUNTERFEIT_URL=http://counterfeit-detection:8088
+    depends_on:
+      - elasticsearch
+      - kafka
+
 networks:
   provenance_net:
     driver: bridge

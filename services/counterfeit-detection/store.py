@@ -51,6 +51,12 @@ class WeaviateStore:
         obj = self._col.query.fetch_object_by_id(design_id)
         return obj and _view(obj.uuid, obj.properties)
 
+    def list_page(self, page: int, limit: int) -> tuple[list[dict], int]:
+        # shortcut: offset paging is unordered and capped by Weaviate's QUERY_MAXIMUM_RESULTS (10k); switch to the cursor API for larger registries.
+        res = self._col.query.fetch_objects(limit=limit, offset=(page - 1) * limit)
+        total = self._col.aggregate.over_all(total_count=True).total_count
+        return [_view(o.uuid, o.properties) for o in res.objects], total
+
     def nearest(self, vector: list[float], limit: int, exclude_wholesaler: str | None = None) -> list[tuple[dict, float]]:
         """Closest designs with cosine similarity, best first."""
         filters = Filter.by_property("wholesalerId").not_equal(exclude_wholesaler) if exclude_wholesaler else None

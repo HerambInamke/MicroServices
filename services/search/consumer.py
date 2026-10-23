@@ -1,0 +1,37 @@
+"""Keeps the index in step with the catalog's product.* events."""
+
+import json
+import logging
+
+from index import product_doc
+
+log = logging.getLogger("search")
+
+TOPICS = ["product.created", "product.updated", "product.deleted"]
+
+
+def handle(index, event: dict) -> None:
+    p = event["payload"]
+    if event["eventType"] == "ProductDeleted":
+        index.delete("product", p["productId"])
+    else:
+        index.upsert(product_doc(p))
+
+
+def run(index, brokers: str) -> None:
+    """Blocking poll loop; main.py runs it in a daemon thread."""
+    from confluent_kafka import Consumer  # imported lazily so tests don't need librdkafka
+
+    consumer = Consumer({"bootstrap.servers": brokers, "group.id": "search", "auto.offset.reset": "earliest"})
+    consumer.subscribe(TOPICS)
+    while True:
+        msg = consumer.poll(1.0)
+        if msg is None:
+            continue
+        if msg.error():
+            log.warning("kafka: %s", msg.error())
+            continue
+        try:
+            handle(index, json.loads(msg.value()))
+        except Exception:  # noqa: BLE001 - one bad event must not stop the loop
+            log.exception("skipping event at %s[%s]@%s", msg.topic(), msg.partition(), msg.offset())
