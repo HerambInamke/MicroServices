@@ -1,5 +1,12 @@
 package com.provenance.catalog;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
@@ -9,11 +16,13 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
@@ -26,6 +35,7 @@ class CatalogApiTest {
     @Autowired ObjectMapper json;
     @Autowired ProductRepository products;
     @Autowired CategoryRepository categories;
+    @MockBean EventPublisher events;
 
     long categoryId;
 
@@ -200,5 +210,28 @@ class CatalogApiTest {
         // Replacing with an empty list clears the tiers.
         mvc.perform(as(body(post("/products/" + id + "/price-tiers"), "{\"tiers\":[]}"), "w1", "wholesaler"))
                 .andExpect(jsonPath("$.data.priceTiers.length()").value(0));
+    }
+
+    @Test
+    void productChangesArePublishedOnlyOnSuccess() throws Exception {
+        long id = createProduct("w1", 10, "100");
+        String key = Long.toString(id);
+        verify(events).publish(eq("product.created"), eq("ProductCreated"), eq(key),
+                argThat((Map<String, Object> m) -> m.get("productId").equals(id) && m.get("wholesalerId").equals("w1")));
+
+        clearInvocations(events);
+        mvc.perform(as(body(patch("/products/" + id), "{\"name\":\"Stolen\"}"), "w2", "wholesaler"))
+                .andExpect(status().isForbidden());
+        mvc.perform(as(body(post("/products"), "{\"name\":\"\"}"), "w1", "wholesaler"))
+                .andExpect(status().isBadRequest());
+        verify(events, never()).publish(anyString(), anyString(), anyString(), any());
+
+        mvc.perform(as(body(patch("/products/" + id), "{\"name\":\"Renamed\"}"), "w1", "wholesaler"))
+                .andExpect(status().isOk());
+        verify(events).publish(eq("product.updated"), eq("ProductUpdated"), eq(key),
+                argThat((Map<String, Object> m) -> "Renamed".equals(m.get("name"))));
+        mvc.perform(as(delete("/products/" + id), "w1", "wholesaler"))
+                .andExpect(status().isOk());
+        verify(events).publish("product.deleted", "ProductDeleted", key, Map.of("productId", id));
     }
 }
