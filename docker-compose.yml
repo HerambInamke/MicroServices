@@ -138,6 +138,7 @@ services:
       - MEDIA_URL=http://media-upload:8085
       - LEDGER_URL=http://provenance-ledger:8086
       - QR_URL=http://qr-verification:8087
+      - COUNTERFEIT_URL=http://counterfeit-detection:8088
     depends_on:
       - auth-identity
       - business-profile
@@ -146,6 +147,7 @@ services:
       - media-upload
       - provenance-ledger
       - qr-verification
+      - counterfeit-detection
 
   auth-identity:
     <<: *app
@@ -285,10 +287,14 @@ services:
     environment:
       - PORT=8088
       - WEAVIATE_URL=http://weaviate:8080
+      - CATALOG_URL=http://wholesale-catalog:8083
+      - MEDIA_URL=http://media-upload:8085
       # Empty uses the calibrated default in app.py.
       - MATCH_THRESHOLD=${MATCH_THRESHOLD:-}
     depends_on:
       - weaviate
+      - wholesale-catalog
+      - media-upload
 
 networks:
   provenance_net:

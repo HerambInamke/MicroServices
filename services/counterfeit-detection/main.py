@@ -6,6 +6,7 @@ import time
 import uvicorn
 
 from app import DEFAULT_MATCH_THRESHOLD, create_app
+from clients import CatalogClient, MediaClient
 from embedder import ClipEmbedder
 from store import WeaviateStore
 
@@ -38,7 +39,8 @@ def connect(url: str) -> WeaviateStore:
 def build_app():
     store = connect(require_env("WEAVIATE_URL"))
     threshold = float(os.getenv("MATCH_THRESHOLD") or DEFAULT_MATCH_THRESHOLD)
-    return create_app(store, ClipEmbedder(), threshold)
+    catalog, media = CatalogClient(require_env("CATALOG_URL")), MediaClient(require_env("MEDIA_URL"))
+    return create_app(store, ClipEmbedder(), catalog, media, threshold)
 
 
 if __name__ == "__main__":

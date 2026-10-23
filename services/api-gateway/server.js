@@ -22,6 +22,7 @@ const app = createApp({
     order: requireEnv('ORDER_URL'),
     ledger: requireEnv('LEDGER_URL'),
     qr: requireEnv('QR_URL'),
+    counterfeit: requireEnv('COUNTERFEIT_URL'),
   },
 });
 
