@@ -338,6 +338,31 @@ services:
     depends_on:
       - redis
 
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    environment:
+      CLICKHOUSE_USER: default
+      CLICKHOUSE_PASSWORD: clickhousepassword
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    networks:
+      - provenance_net
+
+  analytics:
+    <<: *app
+    build:
+      context: ./services/analytics
+    environment:
+      - PORT=8091
+      - CLICKHOUSE_URL=clickhouse://default:clickhousepassword@clickhouse:8123/default
+      - KAFKA_BROKERS=kafka:9092
+      - CATALOG_URL=http://wholesale-catalog:8083
+    depends_on:
+      - clickhouse
+      - kafka
+
 networks:
   provenance_net:
     driver: bridge
