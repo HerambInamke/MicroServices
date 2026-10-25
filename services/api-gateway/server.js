@@ -29,6 +29,7 @@ const app = createApp({
   },
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`API Gateway listening on port ${PORT}`);
 });
+server.on('upgrade', app.upgrade);
