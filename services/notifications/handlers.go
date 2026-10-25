@@ -18,6 +18,7 @@ func (s *Server) routes() *mux.Router {
 	r.HandleFunc("/health", healthHandler).Methods("GET")
 	r.HandleFunc("/notifications", s.authed(s.list)).Methods("GET")
 	r.HandleFunc("/notifications/{id}/read", s.authed(s.markRead)).Methods("PATCH")
+	r.HandleFunc("/ws/notifications", s.authed(s.live)).Methods("GET")
 	return r
 }
 

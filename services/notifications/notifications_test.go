@@ -6,15 +6,20 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
 )
 
 type fakeStore struct {
 	seen  map[string]bool
 	items []Notification
+	mu    sync.Mutex // guards subs: WS handlers subscribe from server goroutines
+	subs  map[string][]chan string
 }
 
-func newFakeStore() *fakeStore { return &fakeStore{seen: map[string]bool{}} }
+func newFakeStore() *fakeStore {
+	return &fakeStore{seen: map[string]bool{}, subs: map[string][]chan string{}}
+}
 
 func (f *fakeStore) Add(_ context.Context, n Notification, eventID string) (bool, error) {
 	if f.seen[eventID] {
@@ -22,7 +27,28 @@ func (f *fakeStore) Add(_ context.Context, n Notification, eventID string) (bool
 	}
 	f.seen[eventID] = true
 	f.items = append(f.items, n)
+	live, _ := json.Marshal(n)
+	f.mu.Lock()
+	for _, c := range f.subs[n.UserID] {
+		c <- string(live)
+	}
+	f.mu.Unlock()
 	return true, nil
+}
+
+func (f *fakeStore) Subscribe(_ context.Context, userID string) (<-chan string, func(), error) {
+	c := make(chan string, 10)
+	f.mu.Lock()
+	f.subs[userID] = append(f.subs[userID], c)
+	f.mu.Unlock()
+	return c, func() {}, nil
+}
+
+// subscribers reports how many live connections userID has, so tests can wait for one.
+func (f *fakeStore) subscribers(userID string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.subs[userID])
 }
 
 func (f *fakeStore) List(_ context.Context, userID string, unreadOnly bool) ([]Notification, error) {
