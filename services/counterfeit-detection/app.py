@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-from fastapi import Depends, FastAPI, File, Form, Header, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from PIL import Image
@@ -26,8 +26,8 @@ class ApiError(Exception):
         self.status, self.code, self.message = status, code, message
 
 
-def ok(data: Any, status: int = 200) -> JSONResponse:
-    return JSONResponse({"data": data, "error": None, "meta": {}}, status_code=status)
+def ok(data: Any, status: int = 200, meta: dict | None = None) -> JSONResponse:
+    return JSONResponse({"data": data, "error": None, "meta": meta or {}}, status_code=status)
 
 
 def error(status: int, code: str, message: str) -> JSONResponse:
@@ -128,6 +128,11 @@ def create_app(store, embedder, catalog, media, threshold: float = DEFAULT_MATCH
         hits = store.nearest(embed(data), limit)
         results = [{"design": d, "similarity": round(s, 4)} for d, s in hits]
         return ok({"match": bool(hits) and hits[0][1] >= threshold, "threshold": threshold, "results": results})
+
+    @app.get("/designs")
+    def list_designs(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
+        designs, total = store.list_page(page, limit)
+        return ok(designs, meta={"page": page, "limit": limit, "total": total, "hasMore": page * limit < total})
 
     @app.get("/designs/{design_id}")
     def get_design(design_id: str):

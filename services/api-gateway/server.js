@@ -23,6 +23,9 @@ const app = createApp({
     ledger: requireEnv('LEDGER_URL'),
     qr: requireEnv('QR_URL'),
     counterfeit: requireEnv('COUNTERFEIT_URL'),
+    search: requireEnv('SEARCH_URL'),
+    inventory: requireEnv('INVENTORY_URL'),
+    analytics: requireEnv('ANALYTICS_URL'),
   },
 });
 

@@ -50,6 +50,39 @@ class CatalogClient:
         return Quote(int(d["productId"]), d["wholesalerId"], int(d["qty"]), Decimal(d["unitPrice"]), Decimal(d["total"]))
 
 
+class InventoryError(Exception):
+    """Inventory refused the reservation or could not be reached."""
+
+    def __init__(self, status: int, code: str, message: str):
+        super().__init__(message)
+        self.status, self.code, self.message = status, code, message
+
+
+class InventoryClient:
+    """Internal Inventory Sync endpoints; reached directly on the compose network, never through the gateway."""
+
+    def __init__(self, base_url: str, timeout: float = 5.0):
+        self._http = httpx.Client(base_url=base_url, timeout=timeout)
+
+    def reserve(self, order_id: str, lines: list[tuple[int, int]]) -> None:
+        items = [{"productId": pid, "qty": qty} for pid, qty in lines]
+        try:
+            res = self._http.post("/inventory/reserve", json={"orderId": order_id, "items": items})
+        except httpx.HTTPError as e:
+            raise InventoryError(502, "INVENTORY_UNAVAILABLE", "could not reach inventory") from e
+        if res.status_code == 409:
+            raise InventoryError(409, "OUT_OF_STOCK", res.json()["error"]["message"])
+        if res.status_code != 200:
+            raise InventoryError(502, "INVENTORY_UNAVAILABLE", "inventory returned an unexpected response")
+
+    def release(self, order_id: str) -> None:
+        """Best effort: the caller's own change is already decided, so failures are only logged."""
+        try:
+            self._http.post("/inventory/release", json={"orderId": order_id}).raise_for_status()
+        except httpx.HTTPError:
+            log.exception("could not release stock for order %s; it stays reserved", order_id)
+
+
 class PaymentProviderError(Exception):
     pass
 

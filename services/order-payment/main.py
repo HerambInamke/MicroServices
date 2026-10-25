@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from app import create_app, init_db
-from clients import CatalogClient, KafkaPublisher, RazorpayClient
+from clients import CatalogClient, InventoryClient, KafkaPublisher, RazorpayClient
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("order-payment")
@@ -48,6 +48,7 @@ def build_app():
     return create_app(
         sessionmaker(engine, expire_on_commit=False),
         catalog=CatalogClient(require_env("CATALOG_URL")),
+        inventory=InventoryClient(require_env("INVENTORY_URL")),
         publisher=KafkaPublisher(require_env("KAFKA_BROKERS")),
         razorpay=razorpay,
         webhook_secret=os.getenv("RAZORPAY_WEBHOOK_SECRET", ""),
