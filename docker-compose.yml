@@ -333,6 +333,20 @@ services:
     networks:
       - provenance_net
 
+  notifications:
+    <<: *app
+    build:
+      context: ./services/notifications
+    environment:
+      - PORT=8092
+      - REDIS_URL=redis://redis:6379/1
+      - KAFKA_BROKERS=kafka:9092
+    depends_on:
+      redis:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+
   inventory-sync:
     <<: *app
     build:
