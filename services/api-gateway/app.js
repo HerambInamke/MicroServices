@@ -20,6 +20,12 @@ const ROUTES = [
   ['/analytics', 'analytics'],
 ];
 
+// WebSocket paths (after /api/v1) → owning service key. Always need a token.
+const WS_ROUTES = [
+  [/^\/ws\/notifications$/, 'notifications'],
+  [/^\/ws\/chat\/[^/]+$/, 'chat'],
+];
+
 // Service-to-service endpoints that must never be reachable from outside.
 const INTERNAL = [/^\/inventory\/(reserve|release)\/?$/];
 
@@ -70,16 +76,20 @@ function rateLimiter(limitPerMinute) {
   const hits = new Map();
   const timer = setInterval(() => hits.clear(), 60_000);
   timer.unref();
-  return (req, res, next) => {
-    const n = (hits.get(req.ip) || 0) + 1;
-    hits.set(req.ip, n);
-    if (n > limitPerMinute) return fail(res, 429, 'RATE_LIMITED', 'too many requests, slow down');
+  const allow = (ip) => {
+    const n = (hits.get(ip) || 0) + 1;
+    hits.set(ip, n);
+    return n <= limitPerMinute;
+  };
+  const limit = (req, res, next) => {
+    if (!allow(req.ip)) return fail(res, 429, 'RATE_LIMITED', 'too many requests, slow down');
     next();
   };
+  limit.allow = allow;
+  return limit;
 }
 
-function proxy(req, res, target, path, identity) {
-  const url = new URL(path, target);
+function forwardHeaders(req, url, identity) {
   const headers = { ...req.headers, host: url.host };
   // Identity only ever comes from the verified token, never from the client.
   delete headers['x-user-id'];
@@ -89,6 +99,12 @@ function proxy(req, res, target, path, identity) {
     headers['x-user-id'] = identity.sub;
     headers['x-user-role'] = identity.role;
   }
+  return headers;
+}
+
+function proxy(req, res, target, path, identity) {
+  const url = new URL(path, target);
+  const headers = forwardHeaders(req, url, identity);
 
   const upstream = http.request(url, { method: req.method, headers }, (up) => {
     res.writeHead(up.statusCode, up.headers);
@@ -121,7 +137,8 @@ function createApp({ services, secret, rateLimitPerMinute = 300 }) {
     res.status(200).json({ status: 'ok', service: 'api-gateway' });
   });
 
-  app.use('/api/v1', rateLimiter(rateLimitPerMinute));
+  const limiter = rateLimiter(rateLimitPerMinute);
+  app.use('/api/v1', limiter);
 
   app.get('/api/v1/health', async (req, res) => {
     const names = Object.keys(services);
@@ -149,6 +166,48 @@ function createApp({ services, secret, rateLimitPerMinute = 300 }) {
     // req.url keeps the query string and is already relative to /api/v1.
     proxy(req, res, services[key], req.url, identity);
   });
+
+  // For server.on('upgrade'). Browsers cannot set headers on a WebSocket, so the token may come as ?access_token=.
+  app.upgrade = (req, socket, head) => {
+    const reject = (status, text) => socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+    socket.on('error', () => socket.destroy());
+    const url = new URL(req.url, 'http://gateway');
+    const path = url.pathname.startsWith('/api/v1/') ? url.pathname.slice('/api/v1'.length) : '';
+    const hit = WS_ROUTES.find(([re]) => re.test(path));
+    if (!hit || !services[hit[1]]) return reject(404, 'Not Found');
+    if (!limiter.allow(socket.remoteAddress)) return reject(429, 'Too Many Requests');
+
+    const token = url.searchParams.get('access_token');
+    url.searchParams.delete('access_token'); // keep the token out of upstream URLs and logs
+    let identity;
+    try {
+      identity = identityFrom(req.headers.authorization || (token ? `Bearer ${token}` : undefined), secret);
+    } catch {
+      return reject(401, 'Unauthorized');
+    }
+    if (!identity) return reject(401, 'Unauthorized');
+
+    const target = new URL(path + url.search, services[hit[1]]);
+    const upstream = http.request(target, { method: 'GET', headers: forwardHeaders(req, target, identity) });
+    upstream.on('upgrade', (upRes, upSocket, upHead) => {
+      const lines = [];
+      for (let i = 0; i < upRes.rawHeaders.length; i += 2) lines.push(`${upRes.rawHeaders[i]}: ${upRes.rawHeaders[i + 1]}`);
+      socket.write(`HTTP/1.1 101 Switching Protocols\r\n${lines.join('\r\n')}\r\n\r\n`);
+      if (upHead.length) socket.write(upHead);
+      if (head.length) upSocket.write(head);
+      upSocket.on('error', () => socket.destroy());
+      socket.on('close', () => upSocket.destroy());
+      upSocket.on('close', () => socket.destroy());
+      upSocket.pipe(socket).pipe(upSocket);
+    });
+    // The service answered without upgrading (e.g. 403 for a non-participant): pass its status on.
+    upstream.on('response', (upRes) => {
+      upRes.resume();
+      reject(upRes.statusCode, upRes.statusMessage || 'Error');
+    });
+    upstream.on('error', () => reject(502, 'Bad Gateway'));
+    upstream.end();
+  };
 
   return app;
 }

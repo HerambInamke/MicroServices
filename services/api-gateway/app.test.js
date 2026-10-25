@@ -24,9 +24,18 @@ before(async () => {
       res.end(JSON.stringify({ method: req.method, url: req.url, headers: req.headers, body }));
     });
   });
+  // Raw upgrade: reply 101, send what we received as the first line, then echo bytes. Thread "forbidden" refuses.
+  upstream.on('upgrade', (req, socket) => {
+    if (req.url.includes('forbidden')) return socket.end('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n');
+    socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n');
+    socket.write(JSON.stringify({ url: req.url, headers: req.headers }) + '\n');
+    socket.pipe(socket);
+  });
   upstreamURL = `http://127.0.0.1:${await listen(upstream)}`;
-  const services = { auth: upstreamURL, profile: upstreamURL, catalog: upstreamURL, media: upstreamURL, order: 'http://127.0.0.1:1', ledger: upstreamURL, qr: upstreamURL, counterfeit: upstreamURL, search: upstreamURL, inventory: upstreamURL, analytics: upstreamURL };
-  gateway = http.createServer(createApp({ services, secret: SECRET, rateLimitPerMinute: 1000 }));
+  const services = { auth: upstreamURL, profile: upstreamURL, catalog: upstreamURL, media: upstreamURL, order: 'http://127.0.0.1:1', ledger: upstreamURL, qr: upstreamURL, counterfeit: upstreamURL, search: upstreamURL, inventory: upstreamURL, analytics: upstreamURL, notifications: upstreamURL, chat: upstreamURL };
+  const app = createApp({ services, secret: SECRET, rateLimitPerMinute: 1000 });
+  gateway = http.createServer(app);
+  gateway.on('upgrade', app.upgrade);
   base = `http://127.0.0.1:${await listen(gateway)}`;
 });
 
@@ -143,4 +152,49 @@ test('rate limit returns 429', async () => {
   for (let i = 0; i < 3; i++) codes.push((await fetch(`http://127.0.0.1:${port}/api/v1/products`)).status);
   server.close();
   assert.deepEqual(codes, [404, 404, 429]);
+});
+
+// Opens a WebSocket-style upgrade through the gateway. Resolves {status} on refusal or {socket, first} on success.
+function upgrade(path, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(base + path, { headers: { connection: 'Upgrade', upgrade: 'websocket', ...headers } });
+    req.on('response', (res) => resolve({ status: res.statusCode }));
+    req.on('upgrade', (res, socket, head) => {
+      // Bytes sent right after the 101 may already be in `head`.
+      const done = (d) => resolve({ status: res.statusCode, socket, first: JSON.parse(d.toString().split('\n')[0]) });
+      head.length ? done(head) : socket.once('data', done);
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+test('websocket upgrade without a token is rejected', async () => {
+  assert.equal((await upgrade('/api/v1/ws/notifications')).status, 401);
+});
+
+test('websocket upgrade with an invalid token is rejected', async () => {
+  assert.equal((await upgrade('/api/v1/ws/notifications?access_token=nope')).status, 401);
+});
+
+test('websocket upgrade on an unknown path is 404', async () => {
+  assert.equal((await upgrade('/api/v1/ws/other', { authorization: `Bearer ${access}` })).status, 404);
+  assert.equal((await upgrade('/api/v1/ws/chat', { authorization: `Bearer ${access}` })).status, 404);
+});
+
+test('websocket upgrade forwards identity, strips the token and pipes both ways', async () => {
+  const { status, socket, first } = await upgrade(`/api/v1/ws/chat/t1?access_token=${access}&x=1`, { 'x-user-id': 'spoofed' });
+  assert.equal(status, 101);
+  assert.equal(first.url, '/ws/chat/t1?x=1');
+  assert.equal(first.headers['x-user-id'], 'user-1');
+  assert.equal(first.headers['x-user-role'], 'wholesaler');
+  assert.equal(first.headers.authorization, undefined);
+  const echoed = new Promise((resolve) => socket.once('data', (d) => resolve(d.toString())));
+  socket.write('ping');
+  assert.equal(await echoed, 'ping');
+  socket.destroy();
+});
+
+test('websocket upgrade refused by the service passes its status through', async () => {
+  assert.equal((await upgrade('/api/v1/ws/chat/forbidden', { authorization: `Bearer ${access}` })).status, 403);
 });
