@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -35,6 +36,8 @@ type Store interface {
 	Add(ctx context.Context, n Notification, eventID string) (bool, error)
 	List(ctx context.Context, userID string, unreadOnly bool) ([]Notification, error)
 	MarkRead(ctx context.Context, userID, id string) error
+	// Subscribe streams the user's new notifications as JSON until stop is called.
+	Subscribe(ctx context.Context, userID string) (msgs <-chan string, stop func(), err error)
 }
 
 type redisStore struct{ rdb *redis.Client }
@@ -54,14 +57,15 @@ func newRedisStore(ctx context.Context, url string) (*redisStore, error) {
 
 // One script so the dedup marker and the notification land together: a crash between
 // them would otherwise mark the event seen and lose the notification on redelivery.
-// KEYS: seen, notif, list. ARGV: dedupSecs, keepSecs, max, id, then hash field/value pairs.
+// KEYS: seen, notif, list. ARGV: dedupSecs, keepSecs, max, id, channel, json, then hash field/value pairs.
 var addScript = redis.NewScript(`
 if not redis.call('SET', KEYS[1], '1', 'NX', 'EX', ARGV[1]) then return 0 end
-redis.call('HSET', KEYS[2], unpack(ARGV, 5))
+redis.call('HSET', KEYS[2], unpack(ARGV, 7))
 redis.call('EXPIRE', KEYS[2], ARGV[2])
 redis.call('LPUSH', KEYS[3], ARGV[4])
 redis.call('LTRIM', KEYS[3], 0, tonumber(ARGV[3]) - 1)
 redis.call('EXPIRE', KEYS[3], ARGV[2])
+redis.call('PUBLISH', ARGV[5], ARGV[6])
 return 1
 `)
 
@@ -75,7 +79,8 @@ func newID() string {
 
 func (s *redisStore) Add(ctx context.Context, n Notification, eventID string) (bool, error) {
 	keys := []string{"seen:" + eventID, "notif:" + n.ID, "notifs:" + n.UserID}
-	args := []any{int(dedupFor.Seconds()), int(keepFor.Seconds()), maxPerUser, n.ID,
+	live, _ := json.Marshal(n)
+	args := []any{int(dedupFor.Seconds()), int(keepFor.Seconds()), maxPerUser, n.ID, channel(n.UserID), string(live),
 		"userId", n.UserID, "type", n.Type, "title", n.Title, "body", n.Body,
 		"refType", n.RefType, "refId", n.RefID, "read", "0", "createdAt", n.CreatedAt}
 	added, err := addScript.Run(ctx, s.rdb, keys, args...).Int()
@@ -121,4 +126,27 @@ func (s *redisStore) MarkRead(ctx context.Context, userID, id string) error {
 		return err
 	}
 	return s.rdb.HSet(ctx, "notif:"+id, "read", "1").Err()
+}
+
+func channel(userID string) string { return "notify:" + userID }
+
+func (s *redisStore) Subscribe(ctx context.Context, userID string) (<-chan string, func(), error) {
+	ps := s.rdb.Subscribe(ctx, channel(userID))
+	// Wait for the subscription to be confirmed, so nothing published after we return is missed.
+	if _, err := ps.Receive(ctx); err != nil {
+		ps.Close()
+		return nil, nil, err
+	}
+	out := make(chan string)
+	go func() {
+		defer close(out)
+		for m := range ps.Channel() {
+			select {
+			case out <- m.Payload:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return out, func() { ps.Close() }, nil
 }
