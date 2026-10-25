@@ -25,7 +25,7 @@ before(async () => {
     });
   });
   upstreamURL = `http://127.0.0.1:${await listen(upstream)}`;
-  const services = { auth: upstreamURL, profile: upstreamURL, catalog: upstreamURL, media: upstreamURL, order: 'http://127.0.0.1:1', ledger: upstreamURL, qr: upstreamURL };
+  const services = { auth: upstreamURL, profile: upstreamURL, catalog: upstreamURL, media: upstreamURL, order: 'http://127.0.0.1:1', ledger: upstreamURL, qr: upstreamURL, counterfeit: upstreamURL };
   gateway = http.createServer(createApp({ services, secret: SECRET, rateLimitPerMinute: 1000 }));
   base = `http://127.0.0.1:${await listen(gateway)}`;
 });
@@ -100,6 +100,9 @@ test('public GET is open but writes need a token', async () => {
   assert.equal((await get('/api/v1/qr/abc/resolve')).status, 201);
   assert.equal((await fetch(`${base}/api/v1/qr/abc/scan-log`, { method: 'POST' })).status, 201);
   assert.equal((await fetch(`${base}/api/v1/qr/p1/generate`, { method: 'POST' })).status, 401);
+  assert.equal((await get('/api/v1/designs/d1')).status, 201);
+  assert.equal((await fetch(`${base}/api/v1/designs`, { method: 'POST' })).status, 401);
+  assert.equal((await fetch(`${base}/api/v1/designs/match`, { method: 'POST' })).status, 401);
 });
 
 test('unknown route is 404 and an unreachable service is 502', async () => {
