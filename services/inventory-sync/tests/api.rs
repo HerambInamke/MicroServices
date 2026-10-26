@@ -154,3 +154,11 @@ async fn reserve_validation() {
     assert_eq!(reserve(&app, "o1", json!([{"productId": 1, "qty": 0}])).await.0, StatusCode::BAD_REQUEST);
     assert_eq!(call(&app, "POST", "/inventory/reserve", None, Some(json!({"nope": 1}))).await.0, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn reserve_and_release_refuse_gateway_identity() {
+    let Some(app) = app(&[]).await else { return };
+    let order = json!({"orderId": "o-ext", "items": [{"productId": 1, "qty": 1}]});
+    assert_eq!(call(&app, "POST", "/inventory/reserve", W1, Some(order)).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(call(&app, "POST", "/inventory/release", W1, Some(json!({"orderId": "o-ext"}))).await.0, StatusCode::FORBIDDEN);
+}

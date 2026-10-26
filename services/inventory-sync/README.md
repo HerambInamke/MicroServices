@@ -11,7 +11,7 @@ line or nothing, so stock can never be oversold.
 |---|---|
 | `GET /inventory/:productId` → `{total, warehouses}` | public |
 | `PATCH /inventory/:productId` `{warehouseId, delta}` | the product's wholesaler (checked against the catalog) |
-| `POST /inventory/reserve`, `POST /inventory/release` `{orderId, items}` | **internal**, order-payment only; the gateway never routes these |
+| `POST /inventory/reserve`, `POST /inventory/release` `{orderId, items}` | **internal**, order-payment only; the gateway never routes these, and requests carrying `X-User-*` identity get 403 |
 
 ## Configuration
 

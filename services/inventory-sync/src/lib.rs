@@ -206,7 +206,17 @@ fn valid_order_id(id: &str) -> Result<(), ApiError> {
     Ok(())
 }
 
-async fn reserve(State(state): Shared, body: Result<Json<Reserve>, JsonRejection>) -> Result<Response, ApiError> {
+// Only Order/Payment calls these, directly and without an identity. Anything carrying gateway identity
+// headers came in from outside, so refuse it even if a gateway rule ever lets it through.
+fn internal_only(headers: &HeaderMap) -> Result<(), ApiError> {
+    if headers.contains_key("x-user-id") || headers.contains_key("x-user-role") {
+        return Err(err(StatusCode::FORBIDDEN, "FORBIDDEN", "internal endpoint"));
+    }
+    Ok(())
+}
+
+async fn reserve(State(state): Shared, headers: HeaderMap, body: Result<Json<Reserve>, JsonRejection>) -> Result<Response, ApiError> {
+    internal_only(&headers)?;
     let Json(req) = body?;
     valid_order_id(&req.order_id)?;
     if req.items.is_empty() || req.items.len() > 50 || req.items.iter().any(|l| l.qty < 1 || l.qty > MAX_QTY) {
@@ -230,7 +240,8 @@ struct Release {
     order_id: String,
 }
 
-async fn release(State(state): Shared, body: Result<Json<Release>, JsonRejection>) -> Result<Response, ApiError> {
+async fn release(State(state): Shared, headers: HeaderMap, body: Result<Json<Release>, JsonRejection>) -> Result<Response, ApiError> {
+    internal_only(&headers)?;
     let Json(req) = body?;
     valid_order_id(&req.order_id)?;
     let result: String = script(&RELEASE, include_str!("release.lua"))
