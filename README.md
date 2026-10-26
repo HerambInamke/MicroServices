@@ -90,7 +90,7 @@ Each service folder has its own `README.md` with endpoints, events, configuratio
 | `order.placed`, `order.status.changed`, `payment.completed` | order-payment | notifications, analytics, reviews (`status.changed`) |
 | `product.created/updated/deleted` | wholesale-catalog | search |
 | `piece.registered`, `piece.handoff.signed` | provenance-ledger | notifications (handoff) |
-| `chat.message.sent` | chat | notifications |
+| `chat.message.sent`, `chat.offer.updated` | chat | notifications |
 
 Every event uses the envelope in `schemas/events.json` (`eventId, timestamp, sourceService, eventType, payload`).
 Consumers are idempotent (dedup by `eventId` or upsert by key) because Kafka delivers at least once.

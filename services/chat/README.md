@@ -22,7 +22,8 @@ Accepting an offer only records the agreement. The order is still placed through
 
 ## Events
 
-Publishes `chat.message.sent` `{threadId, messageId, senderId, recipientId, kind}`.
+Publishes `chat.message.sent` `{threadId, messageId, senderId, recipientId, kind}` for every new message or offer, and
+`chat.offer.updated` `{threadId, messageId, status, responderId, recipientId}` when an offer is accepted or declined.
 
 ## Configuration
 

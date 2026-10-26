@@ -151,7 +151,9 @@ test('offers: only the other party responds, once; counters chain', async () => 
 
   const msgs = (await call('GET', `/chat/threads/${id}/messages`, 'r2')).body.data;
   assert.deepEqual(msgs.map((m) => m.offer.status), ['accepted', 'countered']);
-  assert.deepEqual(events.map((e) => [e.payload.kind, e.payload.recipientId]), [['offer', 'w2'], ['offer', 'r2']]);
+  // offer → w2, counter → r2, accept → the counter's sender (w2) via chat.offer.updated
+  assert.deepEqual(events.map((e) => [e.topic, e.payload.recipientId]), [['chat.message.sent', 'w2'], ['chat.message.sent', 'r2'], ['chat.offer.updated', 'w2']]);
+  assert.equal(events[2].payload.status, 'accepted');
 });
 
 test('a counter that fails to post leaves the original offer open', async () => {

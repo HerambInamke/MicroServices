@@ -10,7 +10,7 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
-var topics = []string{"order.placed", "order.status.changed", "payment.completed", "piece.handoff.signed", "chat.message.sent"}
+var topics = []string{"order.placed", "order.status.changed", "payment.completed", "piece.handoff.signed", "chat.message.sent", "chat.offer.updated"}
 
 // eventPayload is the union of the fields each topic's payload carries.
 type eventPayload struct {
@@ -44,6 +44,8 @@ func notificationFor(topic string, p eventPayload) (n Notification, ok bool) {
 			title = "New offer"
 		}
 		return Notification{UserID: p.RecipientID, Title: title, Body: title + " in your conversation", RefType: "thread", RefID: p.ThreadID}, true
+	case "chat.offer.updated":
+		return Notification{UserID: p.RecipientID, Title: "Offer " + p.Status, Body: "Your offer was " + p.Status, RefType: "thread", RefID: p.ThreadID}, true
 	}
 	return Notification{}, false
 }

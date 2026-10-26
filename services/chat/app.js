@@ -169,7 +169,17 @@ function createApp({ users, publisher, broadcast }) {
     const view = messageView(updated);
     broadcast(view.threadId, { type: 'offer.updated', message: view });
 
-    if (!counter) return ok(res, 200, view);
+    if (!counter) {
+      // A counter notifies through its new offer; accept/decline tell the offer's sender here.
+      await publisher.publish('chat.offer.updated', 'ChatOfferUpdated', view.threadId, {
+        threadId: view.threadId,
+        messageId: view.id,
+        status,
+        responderId: req.user.id,
+        recipientId: original.senderId,
+      });
+      return ok(res, 200, view);
+    }
     let next;
     try {
       next = await post(thread, req.user.id, {

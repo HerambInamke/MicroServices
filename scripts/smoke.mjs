@@ -382,7 +382,8 @@ assert.equal(accepted.data.offer.status, 'accepted');
 const again = await api('POST', `/chat/threads/${threadId}/offers/${counter.data.id}/respond`, { token: retailer.token, body: { action: 'accept' } });
 assert.equal(again.error?.code, 'OFFER_NOT_OPEN');
 await eventually('offer notification', async () => (await api('GET', '/notifications', { token: wholesaler.token })).data.some((n) => n.refType === 'thread' && n.refId === threadId));
-step('thread opened; offer → counter → accept seen live; double accept 409; offer notified');
+await eventually('offer-accepted notification', async () => (await api('GET', '/notifications', { token: wholesaler.token })).data.some((n) => n.type === 'chat.offer.updated' && n.title === 'Offer accepted' && n.refId === threadId));
+step('thread opened; offer → counter → accept seen live; double accept 409; offer and acceptance notified');
 room.ws.close();
 inbox.ws.close();
 

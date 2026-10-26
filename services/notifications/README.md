@@ -10,6 +10,7 @@ Turns platform events into a per-user inbox, and pushes new items live over a We
 | `order.status.changed` | retailer |
 | `piece.handoff.signed` | previous owner |
 | `chat.message.sent` | the other participant |
+| `chat.offer.updated` (accepted/declined) | the offer's sender |
 
 ## Endpoints
 

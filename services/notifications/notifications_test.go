@@ -90,6 +90,7 @@ func TestEventGoesToTheRightUser(t *testing.T) {
 		{"payment.completed", order, "w1", "o1"},
 		{"piece.handoff.signed", map[string]any{"pieceId": "p1", "fromUserId": "weaver", "toUserId": "w1"}, "weaver", "p1"},
 		{"chat.message.sent", map[string]any{"threadId": "t1", "senderId": "r1", "recipientId": "w1", "kind": "offer"}, "w1", "t1"},
+		{"chat.offer.updated", map[string]any{"threadId": "t1", "responderId": "w1", "recipientId": "r1", "status": "accepted"}, "r1", "t1"},
 	}
 	for _, c := range cases {
 		s := newFakeStore()
