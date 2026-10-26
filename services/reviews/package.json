@@ -1,0 +1,15 @@
+{
+  "name": "reviews",
+  "version": "1.0.0",
+  "description": "Reviews and trust score service (MongoDB, Kafka)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "kafkajs": "^2.2.4",
+    "mongoose": "^8.6.0"
+  }
+}
