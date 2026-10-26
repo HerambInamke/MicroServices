@@ -335,3 +335,65 @@ assert.ok(trends.data.weeks.some((w) => w.qty >= 6), JSON.stringify(trends.data)
 step(`seller summary and public trends reflect the orders (${JSON.stringify(summary.ordersByStatus)})`);
 
 console.log('\nAll Phase 4 smoke checks passed.');
+
+// --- Phase 5: notifications, chat/negotiation, reviews ---
+const wsBase = BASE.replace(/^http/, 'ws');
+// Opens a WebSocket through the gateway and collects every JSON frame it receives.
+async function live(path, token) {
+  const ws = new WebSocket(`${wsBase}${path}?access_token=${token}`);
+  const frames = [];
+  ws.addEventListener('message', (e) => frames.push(JSON.parse(e.data)));
+  await new Promise((resolve, reject) => {
+    ws.addEventListener('open', resolve, { once: true });
+    ws.addEventListener('error', () => reject(new Error(`websocket ${path} refused`)), { once: true });
+  });
+  await new Promise((r) => setTimeout(r, 300)); // let the service subscribe before we produce anything
+  return { ws, frames };
+}
+
+const inbox = await live('/ws/notifications', wholesaler.token);
+const fifthOrder = await api('POST', '/orders', { token: retailer.token, body: { items: [{ productId: pid, qty: 1 }] } });
+assert.equal(fifthOrder.status, 201, JSON.stringify(fifthOrder));
+await eventually('order notification on the live socket', () => inbox.frames.find((n) => n.refId === fifthOrder.data.id));
+const listed5 = await api('GET', '/notifications?unread=true', { token: wholesaler.token });
+const orderNote = listed5.data.find((n) => n.refId === fifthOrder.data.id);
+assert.ok(orderNote, JSON.stringify(listed5));
+assert.equal((await api('PATCH', `/notifications/${orderNote.id}/read`, { token: retailer.token })).status, 404);
+assert.equal((await api('PATCH', `/notifications/${orderNote.id}/read`, { token: wholesaler.token })).status, 200);
+step('placing an order notified the wholesaler live and in the inbox; only they can mark it read');
+
+const threadRes = await api('POST', '/chat/threads', { token: retailer.token, body: { participantId: wholesaler.id } });
+assert.equal(threadRes.status, 201, JSON.stringify(threadRes));
+const threadId = threadRes.data.id;
+assert.equal((await api('POST', '/chat/threads', { token: wholesaler.token, body: { participantId: retailer.id } })).data.id, threadId);
+assert.equal((await api('GET', `/chat/threads/${threadId}/messages`, { token: stranger.token })).status, 403);
+const room = await live(`/ws/chat/${threadId}`, wholesaler.token);
+await assert.rejects(live(`/ws/chat/${threadId}`, stranger.token));
+
+const offer = await api('POST', `/chat/threads/${threadId}/offers`, { token: retailer.token, body: { productId: String(pid), qty: 50, unitPrice: 1650 } });
+assert.equal(offer.status, 201, JSON.stringify(offer));
+await eventually('offer on the wholesaler socket', () => room.frames.find((f) => f.message?.id === offer.data.id));
+const counter = await api('POST', `/chat/threads/${threadId}/offers/${offer.data.id}/respond`, { token: wholesaler.token, body: { action: 'counter', qty: 50, unitPrice: 1720 } });
+assert.equal(counter.status, 201, JSON.stringify(counter));
+assert.equal((await api('POST', `/chat/threads/${threadId}/offers/${counter.data.id}/respond`, { token: wholesaler.token, body: { action: 'accept' } })).status, 403);
+const accepted = await api('POST', `/chat/threads/${threadId}/offers/${counter.data.id}/respond`, { token: retailer.token, body: { action: 'accept' } });
+assert.equal(accepted.status, 200, JSON.stringify(accepted));
+assert.equal(accepted.data.offer.status, 'accepted');
+const again = await api('POST', `/chat/threads/${threadId}/offers/${counter.data.id}/respond`, { token: retailer.token, body: { action: 'accept' } });
+assert.equal(again.error?.code, 'OFFER_NOT_OPEN');
+await eventually('offer notification', async () => (await api('GET', '/notifications', { token: wholesaler.token })).data.some((n) => n.refType === 'thread' && n.refId === threadId));
+step('thread opened; offer → counter → accept seen live; double accept 409; offer notified');
+room.ws.close();
+inbox.ws.close();
+
+const early = await api('POST', '/reviews', { token: retailer.token, body: { orderId: fifthOrder.data.id, rating: 5 } });
+assert.equal(early.status, 409, JSON.stringify(early));
+assert.equal(early.error.code, 'ORDER_NOT_DELIVERED');
+assert.equal((await api('POST', '/reviews', { token: stranger.token, body: { orderId: fifthOrder.data.id, rating: 1 } })).status, 403);
+const score = await api('GET', `/trust-score/${wholesaler.id}`);
+assert.equal(score.status, 200, JSON.stringify(score));
+assert.equal(score.data.reviewCount, 0);
+assert.equal((await api('GET', `/reviews?wholesalerId=${wholesaler.id}`)).status, 200);
+step(`undelivered order cannot be reviewed; public trust score ${score.data.score} (delivered → review needs a paid order, i.e. Razorpay keys)`);
+
+console.log('\nAll Phase 5 smoke checks passed.');
