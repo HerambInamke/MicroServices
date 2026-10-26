@@ -1,0 +1,192 @@
+# One job per service, so a red check names the service that broke. Integration tests get
+# real Mongo/Redis/Postgres/immudb/Anvil; Elasticsearch, ClickHouse, Weaviate and the real CLIP
+# model are left out (their tests skip when TEST_* is unset) to keep CI fast.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  node:
+    name: ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [api-gateway, business-profile, chat, reviews]
+    services:
+      mongo:
+        image: mongo:6-jammy
+        env:
+          MONGO_INITDB_ROOT_USERNAME: root
+          MONGO_INITDB_ROOT_PASSWORD: rootpassword
+        ports: ["27017:27017"]
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\")'"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+      redis:
+        image: redis:7.4-alpine
+        ports: ["6379:6379"]
+    env:
+      MONGO_URL: mongodb://root:rootpassword@localhost:27017/ci_test?authSource=admin
+      TEST_MONGO_URL: mongodb://root:rootpassword@localhost:27017/ci_test?authSource=admin
+      TEST_REDIS_URL: redis://localhost:6379/5
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: services/${{ matrix.service }}/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  go:
+    name: ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [auth-identity, media-upload, notifications, provenance-ledger, qr-verification]
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: root
+          POSTGRES_PASSWORD: rootpassword
+          POSTGRES_DB: ci_test
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U root" --health-interval 5s --health-timeout 5s --health-retries 12
+      redis:
+        image: redis:7.4-alpine
+        ports: ["6379:6379"]
+      immudb:
+        image: codenotary/immudb:1.9.5
+        ports: ["3322:3322"]
+    env:
+      TEST_DB_URL: postgres://root:rootpassword@localhost:5432/ci_test?sslmode=disable
+      TEST_REDIS_URL: redis://localhost:6379/15
+      TEST_IMMUDB_HOST: localhost
+      TEST_CHAIN_RPC_URL: http://localhost:8545
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: services/${{ matrix.service }}/go.mod
+          cache-dependency-path: services/${{ matrix.service }}/go.sum
+      - name: Start Anvil and deploy the registry (as compose's contract-deploy does)
+        if: matrix.service == 'provenance-ledger'
+        working-directory: contracts
+        run: |
+          docker run -d -p 8545:8545 --entrypoint anvil ghcr.io/foundry-rs/foundry:v1.0.0 --host 0.0.0.0
+          for i in $(seq 30); do curl -sf -X POST -H 'content-type: application/json' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' localhost:8545 && break; sleep 1; done
+          docker build -q -t provenance-contracts .
+          # Anvil's well-known dev account 0; its first deploy lands at the address the tests use.
+          docker run --rm --network host -e CHAIN_RPC_URL=http://localhost:8545 \
+            -e RELAYER_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+            -e CONTRACT_ADDRESS=0x5FbDB2315678afecb367f032d93F642f64180aa3 provenance-contracts
+      - run: go vet ./...
+      - run: go test ./...
+
+  python:
+    name: ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [analytics, counterfeit-detection, order-payment, search]
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_USER: root
+          POSTGRES_PASSWORD: rootpassword
+          POSTGRES_DB: ci_test
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U root" --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      TEST_DB_URL: postgresql+psycopg://root:rootpassword@localhost:5432/ci_test
+    defaults:
+      run:
+        working-directory: services/${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: services/${{ matrix.service }}/requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - run: pytest -q
+
+  wholesale-catalog:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/wholesale-catalog
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: maven
+      - run: mvn -q -B test
+
+  inventory-sync:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports: ["6379:6379"]
+    env:
+      TEST_REDIS_URL: redis://localhost:6379/15
+    defaults:
+      run:
+        working-directory: services/inventory-sync
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            services/inventory-sync/target
+          key: cargo-${{ hashFiles('services/inventory-sync/Cargo.lock') }}
+      - run: cargo test --locked
+
+  contracts:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@v4
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.0.0
+      - run: forge install foundry-rs/forge-std@v1.9.4 --no-git
+      - run: forge test
+
+  compose:
+    name: docker-compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose config -q

@@ -235,6 +235,9 @@ Known limits worth knowing before going live:
 
 ## 5. Tests
 
+GitHub Actions (`.github/workflows/ci.yml`) runs every service's tests on each pull request and push to
+`main`, one check per service, against real Mongo, Redis, Postgres, immudb and Anvil.
+
 Every service has its own tests, run in Docker (no local toolchains needed). With the stack up:
 
 ```bash
