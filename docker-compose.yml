@@ -347,6 +347,26 @@ services:
       kafka:
         condition: service_healthy
 
+  chat:
+    <<: *app
+    build:
+      context: ./services/chat
+    environment:
+      - PORT=8093
+      - MONGO_URL=mongodb://root:rootpassword@mongodb:27017/chat?authSource=admin
+      - REDIS_URL=redis://redis:6379/2
+      - KAFKA_BROKERS=kafka:9092
+      - AUTH_URL=http://auth-identity:8081
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      kafka:
+        condition: service_healthy
+      auth-identity:
+        condition: service_started
+
   inventory-sync:
     <<: *app
     build:
