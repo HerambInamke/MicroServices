@@ -133,9 +133,6 @@ End-to-end check (drives Phases 1–5 through the gateway exactly like a client)
 node scripts/smoke.mjs
 ```
 
-Re-running the smoke: Phase 3 needs an empty design registry first:
-`docker compose up -d --force-recreate weaviate counterfeit-detection`.
-
 Useful commands:
 
 ```bash

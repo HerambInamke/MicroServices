@@ -396,4 +396,11 @@ assert.equal(score.data.reviewCount, 0);
 assert.equal((await api('GET', `/reviews?wholesalerId=${wholesaler.id}`)).status, 200);
 step(`undelivered order cannot be reviewed; public trust score ${score.data.score} (delivered → review needs a paid order, i.e. Razorpay keys)`);
 
+// --- Cleanup: Phase 3 re-registers the same image, so remove this run's design (Phase 4 needed it for search) ---
+assert.equal((await api('DELETE', `/designs/${design.data.id}`, { token: copier.token })).status, 403);
+const removed = await api('DELETE', `/designs/${design.data.id}`, { token: wholesaler.token });
+assert.equal(removed.status, 200, JSON.stringify(removed));
+assert.equal((await api('GET', `/designs/${design.data.id}`)).status, 404);
+step('only the owner can delete the design; deleted so the smoke can run again');
+
 console.log('\nAll Phase 5 smoke checks passed.');

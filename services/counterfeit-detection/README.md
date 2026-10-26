@@ -12,6 +12,7 @@ wholesaler cannot register a design that matches one already registered.
 | `POST /designs` `{productId, mediaId}` | the product's wholesaler (409 `DESIGN_CONFLICT` if another seller's design matches) |
 | `POST /designs/match` (multipart image) → best matches with scores | logged-in user |
 | `GET /designs`, `GET /designs/:id` | public |
+| `DELETE /designs/:id` | the design's wholesaler or an admin (a deleted design stays in search until the next admin reindex) |
 
 ## Configuration
 

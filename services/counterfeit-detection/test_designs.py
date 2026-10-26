@@ -55,6 +55,9 @@ class FakeStore:
         row = self.rows.get(design_id)
         return row and row[0]
 
+    def delete(self, design_id):
+        self.rows.pop(design_id, None)
+
     def list_page(self, page, limit):
         rows = [d for d, _ in self.rows.values()]
         return rows[(page - 1) * limit : page * limit], len(rows)
@@ -124,6 +127,25 @@ def test_register_and_get(ctx):
     got = client.get(f"/designs/{d['id']}")
     assert got.status_code == 200
     assert got.json()["data"] == d
+
+
+def test_delete_owner_or_admin_only(ctx):
+    client, _, _, media = ctx
+    d = register(client, W1, 1, media.add("w1", "red")).json()["data"]
+    assert client.delete(f"/designs/{d['id']}").status_code == 401
+    assert client.delete(f"/designs/{d['id']}", headers=W2).status_code == 403
+    assert client.delete(f"/designs/{uuid.uuid4()}", headers=W1).status_code == 404
+    assert client.delete("/designs/not-a-uuid", headers=W1).status_code == 404
+
+    res = client.delete(f"/designs/{d['id']}", headers=W1)
+    assert res.status_code == 200
+    assert res.json()["data"] == {"id": d["id"], "deleted": True}
+    assert client.get(f"/designs/{d['id']}").status_code == 404
+    # The same image can now be registered by someone else.
+    assert register(client, W2, 2, media.add("w2", "red")).status_code == 201
+
+    d2 = register(client, W1, 1, media.add("w1", "blue")).json()["data"]
+    assert client.delete(f"/designs/{d2['id']}", headers=as_user("a1", "admin")).status_code == 200
 
 
 def test_get_unknown_and_malformed_ids_are_404(ctx):
@@ -240,6 +262,8 @@ def test_weaviate_store_insert_get_nearest():
         assert hits[0][1] == pytest.approx(0.95, abs=0.01)
         # Hyphenated ids must be excluded whole, not token by token.
         assert [d["id"] for d, _ in store.nearest(unit(VECTORS["red"]), 2, exclude_wholesaler=a["wholesalerId"])] == [b["id"]]
+        store.delete(a["id"])
+        assert store.get(a["id"]) is None
     finally:
         store.client.collections.delete(name)
         store.close()

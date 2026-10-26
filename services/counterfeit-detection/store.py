@@ -51,6 +51,9 @@ class WeaviateStore:
         obj = self._col.query.fetch_object_by_id(design_id)
         return obj and _view(obj.uuid, obj.properties)
 
+    def delete(self, design_id: str) -> None:
+        self._col.data.delete_by_id(design_id)
+
     def list_page(self, page: int, limit: int) -> tuple[list[dict], int]:
         # shortcut: offset paging is unordered and capped by Weaviate's QUERY_MAXIMUM_RESULTS (10k); switch to the cursor API for larger registries.
         res = self._col.query.fetch_objects(limit=limit, offset=(page - 1) * limit)
