@@ -89,12 +89,18 @@ jobs:
         with:
           go-version-file: services/${{ matrix.service }}/go.mod
           cache-dependency-path: services/${{ matrix.service }}/go.sum
-      - name: Start Anvil (local EVM chain for the ledger tests)
+      - name: Start Anvil and deploy the registry (as compose's contract-deploy does)
         if: matrix.service == 'provenance-ledger'
+        working-directory: contracts
         run: |
           docker run -d -p 8545:8545 --entrypoint anvil ghcr.io/foundry-rs/foundry:v1.0.0 --host 0.0.0.0
           for i in $(seq 30); do curl -sf -X POST -H 'content-type: application/json' \
             -d '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' localhost:8545 && break; sleep 1; done
+          docker build -q -t provenance-contracts .
+          # Anvil's well-known dev account 0; its first deploy lands at the address the tests use.
+          docker run --rm --network host -e CHAIN_RPC_URL=http://localhost:8545 \
+            -e RELAYER_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+            -e CONTRACT_ADDRESS=0x5FbDB2315678afecb367f032d93F642f64180aa3 provenance-contracts
       - run: go vet ./...
       - run: go test ./...
 
