@@ -19,7 +19,13 @@ const users = {
   },
 };
 const events = [];
-const publisher = { async publish(topic, type, key, payload) { events.push({ topic, type, key, payload }); } };
+const publisher = {
+  fail: false,
+  async publish(topic, type, key, payload) {
+    if (this.fail) throw new Error('publish failed');
+    events.push({ topic, type, key, payload });
+  },
+};
 
 let server, base, redisPub, redisSub;
 
@@ -146,6 +152,16 @@ test('offers: only the other party responds, once; counters chain', async () => 
   const msgs = (await call('GET', `/chat/threads/${id}/messages`, 'r2')).body.data;
   assert.deepEqual(msgs.map((m) => m.offer.status), ['accepted', 'countered']);
   assert.deepEqual(events.map((e) => [e.payload.kind, e.payload.recipientId]), [['offer', 'w2'], ['offer', 'r2']]);
+});
+
+test('a counter that fails to post leaves the original offer open', async () => {
+  const id = await thread('r1', 'w1');
+  const offer = (await call('POST', `/chat/threads/${id}/offers`, 'r1', { productId: 'p9', qty: 1, unitPrice: 10 })).body.data;
+  publisher.fail = true;
+  const r = await call('POST', `/chat/threads/${id}/offers/${offer.id}/respond`, 'w1', { action: 'counter', qty: 1, unitPrice: 12 });
+  publisher.fail = false;
+  assert.equal(r.status, 500);
+  assert.equal((await call('POST', `/chat/threads/${id}/offers/${offer.id}/respond`, 'w1', { action: 'accept' })).status, 200);
 });
 
 function connect(threadId, user) {
