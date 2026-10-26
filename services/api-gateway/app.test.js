@@ -32,7 +32,7 @@ before(async () => {
     socket.pipe(socket);
   });
   upstreamURL = `http://127.0.0.1:${await listen(upstream)}`;
-  const services = { auth: upstreamURL, profile: upstreamURL, catalog: upstreamURL, media: upstreamURL, order: 'http://127.0.0.1:1', ledger: upstreamURL, qr: upstreamURL, counterfeit: upstreamURL, search: upstreamURL, inventory: upstreamURL, analytics: upstreamURL, notifications: upstreamURL, chat: upstreamURL };
+  const services = { auth: upstreamURL, profile: upstreamURL, catalog: upstreamURL, media: upstreamURL, order: 'http://127.0.0.1:1', ledger: upstreamURL, qr: upstreamURL, counterfeit: upstreamURL, search: upstreamURL, inventory: upstreamURL, analytics: upstreamURL, notifications: upstreamURL, chat: upstreamURL, reviews: upstreamURL };
   const app = createApp({ services, secret: SECRET, rateLimitPerMinute: 1000 });
   gateway = http.createServer(app);
   gateway.on('upgrade', app.upgrade);
@@ -120,6 +120,11 @@ test('public GET is open but writes need a token', async () => {
   assert.equal((await fetch(`${base}/api/v1/inventory/5`, { method: 'PATCH' })).status, 401);
   assert.equal((await get('/api/v1/analytics/trends')).status, 201);
   assert.equal((await get('/api/v1/analytics/seller/w1/summary')).status, 401);
+  assert.equal((await get('/api/v1/reviews?wholesalerId=w1')).status, 201);
+  assert.equal((await fetch(`${base}/api/v1/reviews`, { method: 'POST' })).status, 401);
+  assert.equal((await get('/api/v1/trust-score/w1')).status, 201);
+  assert.equal((await get('/api/v1/notifications')).status, 401);
+  assert.equal((await get('/api/v1/chat/threads')).status, 401);
 });
 
 test('internal inventory endpoints are not routed, even with a token', async () => {
@@ -127,6 +132,25 @@ test('internal inventory endpoints are not routed, even with a token', async () 
     const r = await fetch(`${base}${path}`, { method: 'POST', headers: { authorization: `Bearer ${access}` } });
     assert.equal(r.status, 404, path);
   }
+});
+
+// fetch() normalises dot segments client-side, so send the raw path.
+function rawPost(path) {
+  return new Promise((resolve, reject) => {
+    const req = http.request(base + path, { method: 'POST', headers: { authorization: `Bearer ${access}` } }, (res) => {
+      res.resume();
+      resolve(res.statusCode);
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+test('dot segments cannot reach internal routes', async () => {
+  for (const path of ['/api/v1/inventory/x/../reserve', '/api/v1/inventory/%2e%2e/inventory/reserve', '/api/v1/inventory/x/%2E%2E/release', '/api/v1/inventory/x\\..\\reserve']) {
+    assert.equal(await rawPost(path), 404, path);
+  }
+  assert.equal(await rawPost('/api/v1/inventory/5'), 201); // normal paths still proxy
 });
 
 test('unknown route is 404 and an unreachable service is 502', async () => {

@@ -18,6 +18,10 @@ const ROUTES = [
   ['/search', 'search'],
   ['/inventory', 'inventory'],
   ['/analytics', 'analytics'],
+  ['/notifications', 'notifications'],
+  ['/chat', 'chat'],
+  ['/reviews', 'reviews'],
+  ['/trust-score', 'reviews'],
 ];
 
 // WebSocket paths (after /api/v1) → owning service key. Always need a token.
@@ -43,6 +47,8 @@ const PUBLIC = [
   ['GET', /^\/search(\/suggest)?$/],
   ['GET', /^\/inventory\/[^/]+$/],
   ['GET', /^\/analytics\/trends$/],
+  ['GET', /^\/reviews$/],
+  ['GET', /^\/trust-score\/[^/]+$/],
   ['POST', /^\/payments\/webhook$/], // verified by Razorpay's signature, not a JWT
 ];
 
@@ -151,6 +157,9 @@ function createApp({ services, secret, rateLimitPerMinute = 300 }) {
   // No body parsing here: bodies (including multipart uploads) stream straight through.
   app.use('/api/v1', (req, res) => {
     const path = req.path;
+    // Upstream URLs resolve dot segments (/x/../, %2e%2e, backslashes), so a path that changes under
+    // normalisation could slip past INTERNAL and PUBLIC; refuse it outright.
+    if (new URL(path, 'http://gateway').pathname !== path) return fail(res, 404, 'NOT_FOUND', 'no such route');
     const key = serviceFor(path);
     if (!key || !services[key] || INTERNAL.some((re) => re.test(path))) return fail(res, 404, 'NOT_FOUND', 'no such route');
 

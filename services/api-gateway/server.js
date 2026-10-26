@@ -26,6 +26,9 @@ const app = createApp({
     search: requireEnv('SEARCH_URL'),
     inventory: requireEnv('INVENTORY_URL'),
     analytics: requireEnv('ANALYTICS_URL'),
+    notifications: requireEnv('NOTIFICATIONS_URL'),
+    chat: requireEnv('CHAT_URL'),
+    reviews: requireEnv('REVIEWS_URL'),
   },
 });
 

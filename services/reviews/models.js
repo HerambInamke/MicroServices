@@ -25,4 +25,9 @@ function reviewView(r) {
   return { id: r._id.toString(), orderId: r.orderId, wholesalerId: r.wholesalerId, retailerId: r.retailerId, rating: r.rating, text: r.text, createdAt: r.createdAt };
 }
 
-module.exports = { Review, OrderOutcome, reviewView };
+// The public list hides who bought from whom (and which order): that is competitively sensitive.
+function publicReviewView(r) {
+  return { id: r._id.toString(), wholesalerId: r.wholesalerId, rating: r.rating, text: r.text, createdAt: r.createdAt };
+}
+
+module.exports = { Review, OrderOutcome, reviewView, publicReviewView };

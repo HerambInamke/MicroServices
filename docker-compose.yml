@@ -1,7 +1,7 @@
 # Local development stack. Only the API gateway is published to the host: downstream
 # services trust the X-User-* identity headers the gateway sets, so they must not be
 # reachable directly. Infra ports are published for local debugging tools.
-# All credentials below are dev-only placeholders.
+# Credentials default to dev-only placeholders; override them in .env (see .env.example).
 
 x-app: &app
   restart: unless-stopped
@@ -45,7 +45,7 @@ services:
     image: postgres:15-alpine
     environment:
       POSTGRES_USER: root
-      POSTGRES_PASSWORD: rootpassword
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rootpassword}
     volumes:
       - ./infra/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
@@ -62,7 +62,7 @@ services:
     image: mongo:6-jammy
     environment:
       MONGO_INITDB_ROOT_USERNAME: root
-      MONGO_INITDB_ROOT_PASSWORD: rootpassword
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:-rootpassword}
     ports:
       - "27017:27017"
     healthcheck:
@@ -79,7 +79,7 @@ services:
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: root
-      MINIO_ROOT_PASSWORD: rootpassword
+      MINIO_ROOT_PASSWORD: ${MINIO_PASSWORD:-rootpassword}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -130,7 +130,8 @@ services:
       - "3000:3000"
     environment:
       - PORT=3000
-      - JWT_SECRET=dev-only-change-me
+      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-300}
+      - JWT_SECRET=${JWT_SECRET:-dev-only-change-me}
       - AUTH_URL=http://auth-identity:8081
       - PROFILE_URL=http://business-profile:8082
       - CATALOG_URL=http://wholesale-catalog:8083
@@ -142,6 +143,9 @@ services:
       - SEARCH_URL=http://search:8089
       - INVENTORY_URL=http://inventory-sync:8090
       - ANALYTICS_URL=http://analytics:8091
+      - NOTIFICATIONS_URL=http://notifications:8092
+      - CHAT_URL=http://chat:8093
+      - REVIEWS_URL=http://reviews:8094
     depends_on:
       - auth-identity
       - business-profile
@@ -154,6 +158,9 @@ services:
       - search
       - inventory-sync
       - analytics
+      - notifications
+      - chat
+      - reviews
 
   auth-identity:
     <<: *app
@@ -161,10 +168,10 @@ services:
       context: ./services/auth-identity
     environment:
       - PORT=8081
-      - DB_URL=postgres://root:rootpassword@postgres:5432/auth_db?sslmode=disable
-      - JWT_SECRET=dev-only-change-me
-      - ADMIN_EMAIL=admin@provenance.local
-      - ADMIN_PASSWORD=admin-dev-password
+      - DB_URL=postgres://root:${POSTGRES_PASSWORD:-rootpassword}@postgres:5432/auth_db?sslmode=disable
+      - JWT_SECRET=${JWT_SECRET:-dev-only-change-me}
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-admin@provenance.local}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin-dev-password}
       - KAFKA_BROKERS=kafka:9092
     depends_on:
       postgres:
@@ -176,7 +183,7 @@ services:
       context: ./services/business-profile
     environment:
       - PORT=8082
-      - MONGO_URL=mongodb://root:rootpassword@mongodb:27017/business_profiles?authSource=admin
+      - MONGO_URL=mongodb://root:${MONGO_PASSWORD:-rootpassword}@mongodb:27017/business_profiles?authSource=admin
       - KAFKA_BROKERS=kafka:9092
     depends_on:
       mongodb:
@@ -190,7 +197,7 @@ services:
       - PORT=8083
       - DB_URL=jdbc:postgresql://postgres:5432/catalog_db
       - DB_USER=root
-      - DB_PASS=rootpassword
+      - DB_PASS=${POSTGRES_PASSWORD:-rootpassword}
       - KAFKA_BROKERS=kafka:9092
     depends_on:
       postgres:
@@ -202,7 +209,7 @@ services:
       context: ./services/order-payment
     environment:
       - PORT=8084
-      - DB_URL=postgresql+psycopg://root:rootpassword@postgres:5432/order_db
+      - DB_URL=postgresql+psycopg://root:${POSTGRES_PASSWORD:-rootpassword}@postgres:5432/order_db
       - KAFKA_BROKERS=kafka:9092
       - CATALOG_URL=http://wholesale-catalog:8083
       - INVENTORY_URL=http://inventory-sync:8090
@@ -222,10 +229,10 @@ services:
       context: ./services/media-upload
     environment:
       - PORT=8085
-      - DB_URL=postgres://root:rootpassword@postgres:5432/media_db?sslmode=disable
+      - DB_URL=postgres://root:${POSTGRES_PASSWORD:-rootpassword}@postgres:5432/media_db?sslmode=disable
       - MINIO_URL=http://minio:9000
       - MINIO_ACCESS_KEY=root
-      - MINIO_SECRET_KEY=rootpassword
+      - MINIO_SECRET_KEY=${MINIO_PASSWORD:-rootpassword}
       - MINIO_BUCKET=media
       - KAFKA_BROKERS=kafka:9092
     depends_on:
@@ -263,7 +270,7 @@ services:
       context: ./services/qr-verification
     environment:
       - PORT=8087
-      - DB_URL=postgres://root:rootpassword@postgres:5432/qr_db?sslmode=disable
+      - DB_URL=postgres://root:${POSTGRES_PASSWORD:-rootpassword}@postgres:5432/qr_db?sslmode=disable
       - LEDGER_URL=http://provenance-ledger:8086
       - KAFKA_BROKERS=kafka:9092
       # Origin encoded into printed QR codes; set to the public gateway URL outside local dev.
@@ -353,7 +360,7 @@ services:
       context: ./services/chat
     environment:
       - PORT=8093
-      - MONGO_URL=mongodb://root:rootpassword@mongodb:27017/chat?authSource=admin
+      - MONGO_URL=mongodb://root:${MONGO_PASSWORD:-rootpassword}@mongodb:27017/chat?authSource=admin
       - REDIS_URL=redis://redis:6379/2
       - KAFKA_BROKERS=kafka:9092
       - AUTH_URL=http://auth-identity:8081
@@ -373,7 +380,7 @@ services:
       context: ./services/reviews
     environment:
       - PORT=8094
-      - MONGO_URL=mongodb://root:rootpassword@mongodb:27017/reviews?authSource=admin
+      - MONGO_URL=mongodb://root:${MONGO_PASSWORD:-rootpassword}@mongodb:27017/reviews?authSource=admin
       - KAFKA_BROKERS=kafka:9092
       - ORDER_URL=http://order-payment:8084
     depends_on:
@@ -399,7 +406,7 @@ services:
     image: clickhouse/clickhouse-server:24.8
     environment:
       CLICKHOUSE_USER: default
-      CLICKHOUSE_PASSWORD: clickhousepassword
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhousepassword}
     ulimits:
       nofile:
         soft: 262144
@@ -413,7 +420,7 @@ services:
       context: ./services/analytics
     environment:
       - PORT=8091
-      - CLICKHOUSE_URL=clickhouse://default:clickhousepassword@clickhouse:8123/default
+      - CLICKHOUSE_URL=clickhouse://default:${CLICKHOUSE_PASSWORD:-clickhousepassword}@clickhouse:8123/default
       - KAFKA_BROKERS=kafka:9092
       - CATALOG_URL=http://wholesale-catalog:8083
     depends_on:
