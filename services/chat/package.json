@@ -1,0 +1,17 @@
+{
+  "name": "chat",
+  "version": "1.0.0",
+  "description": "Chat and negotiation service (MongoDB, Redis pub/sub, Kafka)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "ioredis": "^5.4.1",
+    "kafkajs": "^2.2.4",
+    "mongoose": "^8.6.0",
+    "ws": "^8.18.0"
+  }
+}
