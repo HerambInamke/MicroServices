@@ -98,3 +98,41 @@ func TestRedisPublishesOnAdd(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 }
+
+func TestOpenSocketsArePerUserCapped(t *testing.T) {
+	srv := httptest.NewServer((&Server{store: newFakeStore()}).routes())
+	defer srv.Close()
+
+	var conns []*websocket.Conn
+	for i := 0; i < maxSocketsPerUser; i++ {
+		conn, _, err := dial(t, srv, "w1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		conns = append(conns, conn)
+	}
+	if _, resp, err := dial(t, srv, "w1"); err == nil || resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("over the cap: want 429, got err=%v resp=%v", err, resp)
+	}
+	other, _, err := dial(t, srv, "r1") // other users are unaffected
+	if err != nil {
+		t.Fatal(err)
+	}
+	other.Close()
+
+	conns[0].Close()
+	for i := 0; ; i++ { // the slot frees once the server notices the close
+		conn, _, err := dial(t, srv, "w1")
+		if err == nil {
+			conn.Close()
+			break
+		}
+		if i > 100 {
+			t.Fatal("slot never freed after close")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	for _, c := range conns[1:] {
+		c.Close()
+	}
+}

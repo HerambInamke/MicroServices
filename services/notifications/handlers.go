@@ -5,12 +5,16 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"sync"
 
 	"github.com/gorilla/mux"
 )
 
 type Server struct {
 	store Store
+
+	mu      sync.Mutex
+	sockets map[string]int // open WebSockets per user
 }
 
 func (s *Server) routes() *mux.Router {

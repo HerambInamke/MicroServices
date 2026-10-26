@@ -170,10 +170,17 @@ function createApp({ users, publisher, broadcast }) {
     broadcast(view.threadId, { type: 'offer.updated', message: view });
 
     if (!counter) return ok(res, 200, view);
-    const next = await post(thread, req.user.id, {
-      kind: 'offer',
-      offer: { productId: original.offer.productId, ...counter, status: 'open', respondsTo: original._id },
-    });
+    let next;
+    try {
+      next = await post(thread, req.user.id, {
+        kind: 'offer',
+        offer: { productId: original.offer.productId, ...counter, status: 'open', respondsTo: original._id },
+      });
+    } catch (err) {
+      // Without the counter message the original must stay answerable.
+      await Message.updateOne({ _id: original._id, 'offer.status': 'countered' }, { $set: { 'offer.status': 'open' } });
+      throw err;
+    }
     ok(res, 201, next);
   }));
 
@@ -184,7 +191,7 @@ function createApp({ users, publisher, broadcast }) {
     if (err instanceof ApiError) return fail(res, err.status, err.code, err.message);
     if (err.type === 'entity.parse.failed') return fail(res, 400, 'INVALID_BODY', 'request body must be valid JSON');
     if (err instanceof mongoose.Error.ValidationError || err instanceof mongoose.Error.CastError) {
-      return fail(res, 400, 'VALIDATION_ERROR', err.message);
+      return fail(res, 400, 'VALIDATION_ERROR', 'request has an invalid value');
     }
     console.error(err);
     fail(res, 500, 'INTERNAL', 'something went wrong');

@@ -1,6 +1,6 @@
 const express = require('express');
 const mongoose = require('mongoose');
-const { Review, OrderOutcome, reviewView } = require('./models');
+const { Review, OrderOutcome, reviewView, publicReviewView } = require('./models');
 const { trustScore } = require('./score');
 
 const MAX_TEXT = 2000;
@@ -82,7 +82,7 @@ function createApp({ orders }) {
       Review.find({ wholesalerId }).sort({ createdAt: -1, _id: -1 }).skip((paging.page - 1) * paging.limit).limit(paging.limit),
       Review.countDocuments({ wholesalerId }),
     ]);
-    ok(res, 200, items.map(reviewView), { ...paging, total, hasMore: paging.page * paging.limit < total });
+    ok(res, 200, items.map(publicReviewView), { ...paging, total, hasMore: paging.page * paging.limit < total });
   }));
 
   app.get('/trust-score/:wholesalerId', wrap(async (req, res) => {
@@ -111,7 +111,7 @@ function createApp({ orders }) {
     if (err instanceof ApiError) return fail(res, err.status, err.code, err.message);
     if (err.type === 'entity.parse.failed') return fail(res, 400, 'INVALID_BODY', 'request body must be valid JSON');
     if (err instanceof mongoose.Error.ValidationError || err instanceof mongoose.Error.CastError) {
-      return fail(res, 400, 'VALIDATION_ERROR', err.message);
+      return fail(res, 400, 'VALIDATION_ERROR', 'request has an invalid value');
     }
     console.error(err);
     fail(res, 500, 'INTERNAL', 'something went wrong');

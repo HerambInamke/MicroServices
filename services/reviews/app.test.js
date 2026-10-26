@@ -89,6 +89,8 @@ test('submit: only the retailer of a delivered order, once', async () => {
   r = await call('GET', '/reviews?wholesalerId=w1');
   assert.equal(r.status, 200);
   assert.equal(r.body.meta.total, 1);
+  assert.equal(r.body.data[0].retailerId, undefined); // public list hides the buyer
+  assert.equal(r.body.data[0].orderId, undefined);
   assert.equal((await call('GET', '/reviews')).status, 400);
 });
 
