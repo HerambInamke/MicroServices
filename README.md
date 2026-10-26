@@ -81,6 +81,8 @@ gateway's may ever be exposed.**
 | reviews | 8094 | Node | Mongo `reviews` | reviews on delivered orders, trust score |
 | contracts | – | Solidity/Foundry | chain | `ProvenanceRegistry` (deployed by `contract-deploy`) |
 
+Each service folder has its own `README.md` with endpoints, events, configuration and test commands.
+
 ### Kafka topics
 
 | Topic | Producer | Consumers |
