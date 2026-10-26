@@ -145,4 +145,18 @@ def create_app(store, embedder, catalog, media, threshold: float = DEFAULT_MATCH
             raise ApiError(404, "DESIGN_NOT_FOUND", "design not found")
         return ok(design)
 
+    @app.delete("/designs/{design_id}")
+    def delete_design(design_id: str, who: Caller = Depends(caller)):
+        try:
+            UUID(design_id)
+        except ValueError:
+            raise ApiError(404, "DESIGN_NOT_FOUND", "design not found") from None
+        design = store.get(design_id)
+        if design is None:
+            raise ApiError(404, "DESIGN_NOT_FOUND", "design not found")
+        if who.role != "admin" and design["wholesalerId"] != who.id:
+            raise ApiError(403, "FORBIDDEN", "you can only delete your own designs")
+        store.delete(design_id)
+        return ok({"id": design_id, "deleted": True})
+
     return app
