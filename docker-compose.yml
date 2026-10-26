@@ -367,6 +367,23 @@ services:
       auth-identity:
         condition: service_started
 
+  reviews:
+    <<: *app
+    build:
+      context: ./services/reviews
+    environment:
+      - PORT=8094
+      - MONGO_URL=mongodb://root:rootpassword@mongodb:27017/reviews?authSource=admin
+      - KAFKA_BROKERS=kafka:9092
+      - ORDER_URL=http://order-payment:8084
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      order-payment:
+        condition: service_started
+
   inventory-sync:
     <<: *app
     build:
