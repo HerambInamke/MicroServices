@@ -22,7 +22,11 @@ def run(index, brokers: str) -> None:
     """Blocking poll loop; main.py runs it in a daemon thread."""
     from confluent_kafka import Consumer  # imported lazily so tests don't need librdkafka
 
-    consumer = Consumer({"bootstrap.servers": brokers, "group.id": "search", "auto.offset.reset": "earliest"})
+    consumer = Consumer({
+        "bootstrap.servers": brokers, "group.id": "search", "auto.offset.reset": "earliest",
+        # Topics are auto-created by the first producer; notice them in seconds, not the 5-minute default.
+        "topic.metadata.refresh.interval.ms": 10000,
+    })
     consumer.subscribe(TOPICS)
     while True:
         msg = consumer.poll(1.0)
