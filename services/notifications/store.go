@@ -117,16 +117,23 @@ func (s *redisStore) List(ctx context.Context, userID string, unreadOnly bool) (
 }
 
 // MarkRead reports ErrNotFound for someone else's notification, so ids cannot be probed.
+// The owner check and the write are one script, so a hash expiring in between is never recreated without a TTL.
 func (s *redisStore) MarkRead(ctx context.Context, userID, id string) error {
-	owner, err := s.rdb.HGet(ctx, "notif:"+id, "userId").Result()
-	if err == redis.Nil || (err == nil && owner != userID) {
-		return ErrNotFound
-	}
+	marked, err := markReadScript.Run(ctx, s.rdb, []string{"notif:" + id}, userID).Int()
 	if err != nil {
 		return err
 	}
-	return s.rdb.HSet(ctx, "notif:"+id, "read", "1").Err()
+	if marked == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
+
+var markReadScript = redis.NewScript(`
+if redis.call('HGET', KEYS[1], 'userId') ~= ARGV[1] then return 0 end
+redis.call('HSET', KEYS[1], 'read', '1')
+return 1
+`)
 
 func channel(userID string) string { return "notify:" + userID }
 

@@ -12,6 +12,8 @@ const (
 	pingEvery = 30 * time.Second
 	pongWait  = 70 * time.Second
 	writeWait = 10 * time.Second
+
+	maxSocketsPerUser = 5
 )
 
 // Auth is the gateway-verified token, not cookies, so a cross-origin page cannot ride a
@@ -20,6 +22,11 @@ var upgrader = websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return
 
 // live streams the caller's new notifications. The socket is receive-only; history comes from GET /notifications.
 func (s *Server) live(w http.ResponseWriter, r *http.Request, userID string) {
+	if !s.openSocket(userID) {
+		fail(w, http.StatusTooManyRequests, "TOO_MANY_CONNECTIONS", "too many open notification streams")
+		return
+	}
+	defer s.closeSocket(userID)
 	msgs, stop, err := s.store.Subscribe(r.Context(), userID)
 	if err != nil {
 		internal(w, err)
@@ -65,5 +72,27 @@ func (s *Server) live(w http.ResponseWriter, r *http.Request, userID string) {
 		case <-closed:
 			return
 		}
+	}
+}
+
+// Each socket holds its own Redis connection, so cap them per user to protect Redis maxclients.
+func (s *Server) openSocket(userID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sockets == nil {
+		s.sockets = map[string]int{}
+	}
+	if s.sockets[userID] >= maxSocketsPerUser {
+		return false
+	}
+	s.sockets[userID]++
+	return true
+}
+
+func (s *Server) closeSocket(userID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sockets[userID]--; s.sockets[userID] <= 0 {
+		delete(s.sockets, userID)
 	}
 }
