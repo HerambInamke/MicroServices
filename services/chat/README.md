@@ -25,6 +25,11 @@ Accepting an offer only records the agreement. The order is still placed through
 Publishes `chat.message.sent` `{threadId, messageId, senderId, recipientId, kind}` for every new message or offer, and
 `chat.offer.updated` `{threadId, messageId, status, responderId, recipientId}` when an offer is accepted or declined.
 
+Events go through a transactional outbox: the message (or offer change), the thread bump and an `outbox` document
+are written in one MongoDB transaction, and a relay sends them to Kafka oldest first, deleting each once
+acknowledged. Only the instance holding the `relay_leases` lease relays, so order holds with several chat instances.
+Transactions need a replica set: compose runs MongoDB as the single-node replica set `rs0`.
+
 ## Configuration
 
 `MONGO_URL`, `REDIS_URL`, `KAFKA_BROKERS`, `AUTH_URL`, `PORT`.
@@ -32,6 +37,6 @@ Publishes `chat.message.sent` `{threadId, messageId, senderId, recipientId, kind
 ## Tests
 
 ```bash
-TEST_MONGO_URL="mongodb://root:rootpassword@localhost:27017/chat_test?authSource=admin" \
+TEST_MONGO_URL="mongodb://root:rootpassword@localhost:27017/chat_test?authSource=admin&directConnection=true" \
 TEST_REDIS_URL=redis://localhost:6379/5 npm test
 ```

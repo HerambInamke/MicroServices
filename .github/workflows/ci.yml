@@ -24,15 +24,6 @@ jobs:
       matrix:
         service: [api-gateway, business-profile, chat, reviews]
     services:
-      mongo:
-        image: mongo:6-jammy
-        env:
-          MONGO_INITDB_ROOT_USERNAME: root
-          MONGO_INITDB_ROOT_PASSWORD: rootpassword
-        ports: ["27017:27017"]
-        options: >-
-          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\")'"
-          --health-interval 5s --health-timeout 5s --health-retries 12
       redis:
         image: redis:7.4-alpine
         ports: ["6379:6379"]
@@ -44,6 +35,19 @@ jobs:
       run:
         working-directory: services/${{ matrix.service }}
     steps:
+      # A step, not a service container: services cannot override the command. Same single-node replica set as
+      # docker-compose (chat needs transactions); auth plus a replica set needs a keyfile.
+      - name: Start MongoDB replica set
+        working-directory: .
+        run: |
+          docker run -d --name mongo -p 27017:27017 -e MONGO_INITDB_ROOT_USERNAME=root -e MONGO_INITDB_ROOT_PASSWORD=rootpassword \
+            --entrypoint bash mongo:6-jammy -c 'head -c 756 /dev/urandom | base64 > /etc/mongo-keyfile && chmod 400 /etc/mongo-keyfile && chown mongodb:mongodb /etc/mongo-keyfile && exec docker-entrypoint.sh mongod --replSet rs0 --keyFile /etc/mongo-keyfile --bind_ip_all'
+          for i in $(seq 1 60); do
+            docker exec mongo mongosh -u root -p rootpassword --quiet --eval "try { rs.status() } catch (e) { rs.initiate({_id: 'rs0', members: [{_id: 0, host: 'localhost:27017'}]}) }; quit(db.hello().isWritablePrimary ? 0 : 1)" && exit 0
+            sleep 2
+          done
+          docker logs mongo | tail -50
+          exit 1
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:

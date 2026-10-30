@@ -21,5 +21,5 @@ One business profile per user: name, GSTIN (validated and upper-cased), business
 ## Tests
 
 ```bash
-MONGO_URL="mongodb://root:rootpassword@localhost:27017/bp_test?authSource=admin" npm test   # throwaway database
+MONGO_URL="mongodb://root:rootpassword@localhost:27017/bp_test?authSource=admin&directConnection=true" npm test   # throwaway database
 ```

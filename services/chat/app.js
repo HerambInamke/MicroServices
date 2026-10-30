@@ -53,9 +53,10 @@ function offerFields(body) {
 }
 
 /**
- * users.get(id, caller) → {id, role} | null; publisher.publish(topic, type, key, payload); broadcast(threadId, event).
+ * users.get(id, caller) → {id, role} | null; outbox.add(session, topic, type, key, payload) writes an event inside the
+ * transaction (events.js relays it); broadcast(threadId, event).
  */
-function createApp({ users, publisher, broadcast }) {
+function createApp({ users, outbox, broadcast }) {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '100kb' }));
@@ -64,19 +65,25 @@ function createApp({ users, publisher, broadcast }) {
     res.status(200).json({ status: 'ok', service: 'chat' });
   });
 
-  // Saves a message, bumps the thread, then tells the live sockets and the notifications service.
-  async function post(thread, senderId, fields) {
-    const message = await Message.create({ threadId: thread._id, senderId, ...fields });
-    await Thread.updateOne({ _id: thread._id }, { $set: { lastMessageAt: message.createdAt } });
+  // Saves a message, bumps the thread and queues the event for notifications, all inside the caller's transaction.
+  // The caller broadcasts to live sockets once it has committed.
+  async function post(session, thread, senderId, fields) {
+    const [message] = await Message.create([{ threadId: thread._id, senderId, ...fields }], { session });
+    await Thread.updateOne({ _id: thread._id }, { $set: { lastMessageAt: message.createdAt } }, { session });
     const view = messageView(message);
-    broadcast(view.threadId, { type: 'message', message: view });
-    await publisher.publish('chat.message.sent', 'ChatMessageSent', view.threadId, {
+    await outbox.add(session, 'chat.message.sent', 'ChatMessageSent', view.threadId, {
       threadId: view.threadId,
       messageId: view.id,
       senderId,
       recipientId: otherParty(thread, senderId),
       kind: view.kind,
     });
+    return view;
+  }
+
+  async function postAndBroadcast(thread, senderId, fields) {
+    const view = await mongoose.connection.transaction((session) => post(session, thread, senderId, fields));
+    broadcast(view.threadId, { type: 'message', message: view });
     return view;
   }
 
@@ -140,7 +147,7 @@ function createApp({ users, publisher, broadcast }) {
     const thread = await loadThread(req.params.id, req.user.id);
     const text = typeof req.body?.text === 'string' ? req.body.text.trim() : '';
     if (!text || text.length > MAX_TEXT) throw new ApiError(400, 'VALIDATION_ERROR', `text must be 1 to ${MAX_TEXT} characters`);
-    ok(res, 201, await post(thread, req.user.id, { kind: 'text', text }));
+    ok(res, 201, await postAndBroadcast(thread, req.user.id, { kind: 'text', text }));
   }));
 
   app.post('/chat/threads/:id/offers', requireUser, wrap(async (req, res) => {
@@ -148,7 +155,7 @@ function createApp({ users, publisher, broadcast }) {
     const { productId } = req.body || {};
     if (typeof productId !== 'string' || !productId || productId.length > 200) throw new ApiError(400, 'VALIDATION_ERROR', 'productId is required');
     const offer = { productId, ...offerFields(req.body), status: 'open' };
-    ok(res, 201, await post(thread, req.user.id, { kind: 'offer', offer }));
+    ok(res, 201, await postAndBroadcast(thread, req.user.id, { kind: 'offer', offer }));
   }));
 
   app.post('/chat/threads/:id/offers/:msgId/respond', requireUser, wrap(async (req, res) => {
@@ -163,34 +170,32 @@ function createApp({ users, publisher, broadcast }) {
     if (original.senderId === req.user.id) throw new ApiError(403, 'FORBIDDEN', 'you cannot respond to your own offer');
 
     const status = { accept: 'accepted', decline: 'declined', counter: 'countered' }[action];
-    // Atomic on status 'open': of two concurrent responses only one wins.
-    const updated = await Message.findOneAndUpdate({ _id: original._id, 'offer.status': 'open' }, { $set: { 'offer.status': status } }, { new: true });
-    if (!updated) throw new ApiError(409, 'OFFER_NOT_OPEN', 'this offer has already been answered');
-    const view = messageView(updated);
-    broadcast(view.threadId, { type: 'offer.updated', message: view });
-
-    if (!counter) {
-      // A counter notifies through its new offer; accept/decline tell the offer's sender here.
-      await publisher.publish('chat.offer.updated', 'ChatOfferUpdated', view.threadId, {
-        threadId: view.threadId,
-        messageId: view.id,
-        status,
-        responderId: req.user.id,
-        recipientId: original.senderId,
-      });
-      return ok(res, 200, view);
-    }
-    let next;
-    try {
-      next = await post(thread, req.user.id, {
+    // One transaction: if the counter cannot be posted, the original stays open.
+    const [view, next] = await mongoose.connection.transaction(async (session) => {
+      // Conditional on status 'open': of two concurrent responses only one wins.
+      const updated = await Message.findOneAndUpdate({ _id: original._id, 'offer.status': 'open' }, { $set: { 'offer.status': status } }, { new: true, session });
+      if (!updated) throw new ApiError(409, 'OFFER_NOT_OPEN', 'this offer has already been answered');
+      const v = messageView(updated);
+      if (!counter) {
+        // A counter notifies through its new offer; accept/decline tell the offer's sender here.
+        await outbox.add(session, 'chat.offer.updated', 'ChatOfferUpdated', v.threadId, {
+          threadId: v.threadId,
+          messageId: v.id,
+          status,
+          responderId: req.user.id,
+          recipientId: original.senderId,
+        });
+        return [v, null];
+      }
+      const posted = await post(session, thread, req.user.id, {
         kind: 'offer',
         offer: { productId: original.offer.productId, ...counter, status: 'open', respondsTo: original._id },
       });
-    } catch (err) {
-      // Without the counter message the original must stay answerable.
-      await Message.updateOne({ _id: original._id, 'offer.status': 'countered' }, { $set: { 'offer.status': 'open' } });
-      throw err;
-    }
+      return [v, posted];
+    });
+    broadcast(view.threadId, { type: 'offer.updated', message: view });
+    if (!next) return ok(res, 200, view);
+    broadcast(next.threadId, { type: 'message', message: next });
     ok(res, 201, next);
   }));
 
