@@ -61,11 +61,9 @@ public class ProductController {
     }
 
     private final ProductService service;
-    private final EventPublisher events;
 
-    public ProductController(ProductService service, EventPublisher events) {
+    public ProductController(ProductService service) {
         this.service = service;
-        this.events = events;
     }
 
     @GetMapping("/products")
@@ -104,9 +102,7 @@ public class ProductController {
             @RequestHeader(name = "X-User-Role", required = false) String role,
             @Valid @RequestBody CreateProduct req) {
         var fields = new ProductService.ProductFields(req.name(), req.description(), req.categoryId(), req.moq(), req.basePrice());
-        // Published here, after the service's transaction has committed.
         Product p = service.create(Caller.of(userId, role), fields);
-        events.publish("product.created", "ProductCreated", p.getId().toString(), EventPublisher.productPayload(p));
         return ApiResponse.ok(ProductView.of(p));
     }
 
@@ -118,7 +114,6 @@ public class ProductController {
             @Valid @RequestBody UpdateProduct req) {
         var fields = new ProductService.ProductFields(req.name(), req.description(), req.categoryId(), req.moq(), req.basePrice());
         Product p = service.update(Caller.of(userId, role), id, fields);
-        events.publish("product.updated", "ProductUpdated", p.getId().toString(), EventPublisher.productPayload(p));
         return ApiResponse.ok(ProductView.of(p));
     }
 
@@ -128,7 +123,6 @@ public class ProductController {
             @RequestHeader(name = "X-User-Role", required = false) String role,
             @PathVariable Long id) {
         service.delete(Caller.of(userId, role), id);
-        events.publish("product.deleted", "ProductDeleted", id.toString(), Map.of("productId", id));
         return ApiResponse.ok(Map.of("id", id, "deleted", true));
     }
 

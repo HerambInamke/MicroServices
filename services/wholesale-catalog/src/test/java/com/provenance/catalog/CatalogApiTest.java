@@ -1,12 +1,6 @@
 package com.provenance.catalog;
 
-import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.argThat;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.clearInvocations;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
@@ -16,14 +10,15 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import java.util.Map;
+import java.util.ArrayList;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
@@ -35,12 +30,14 @@ class CatalogApiTest {
     @Autowired ObjectMapper json;
     @Autowired ProductRepository products;
     @Autowired CategoryRepository categories;
-    @MockBean EventPublisher events;
+    @Autowired JdbcTemplate jdbc;
+    @Autowired OutboxRelay relay;
 
     long categoryId;
 
     @BeforeEach
     void reset() throws Exception {
+        jdbc.update("DELETE FROM outbox");
         products.deleteAll();
         categories.deleteAll();
         categoryId = createCategory("Sarees", null);
@@ -212,26 +209,67 @@ class CatalogApiTest {
                 .andExpect(jsonPath("$.data.priceTiers.length()").value(0));
     }
 
+    /** The outbox rows, oldest first, as {topic, key, envelope}. */
+    List<Object[]> outbox() {
+        return jdbc.query("SELECT topic, event_key, event FROM outbox ORDER BY id",
+                (rs, i) -> new Object[] {rs.getString(1), rs.getString(2), parse(rs.getString(3))});
+    }
+
+    JsonNode parse(String s) {
+        try {
+            return json.readTree(s);
+        } catch (Exception e) {
+            throw new IllegalStateException(e);
+        }
+    }
+
     @Test
-    void productChangesArePublishedOnlyOnSuccess() throws Exception {
+    void productChangesGoToTheOutboxOnlyOnSuccess() throws Exception {
         long id = createProduct("w1", 10, "100");
         String key = Long.toString(id);
-        verify(events).publish(eq("product.created"), eq("ProductCreated"), eq(key),
-                argThat((Map<String, Object> m) -> m.get("productId").equals(id) && m.get("wholesalerId").equals("w1")));
+        List<Object[]> rows = outbox();
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0)[0]).isEqualTo("product.created");
+        assertThat(rows.get(0)[1]).isEqualTo(key);
+        JsonNode created = (JsonNode) rows.get(0)[2];
+        assertThat(created.get("eventType").asText()).isEqualTo("ProductCreated");
+        assertThat(created.get("sourceService").asText()).isEqualTo("wholesale-catalog");
+        assertThat(created.hasNonNull("eventId") && created.hasNonNull("timestamp")).isTrue();
+        assertThat(created.at("/payload/productId").asLong()).isEqualTo(id);
+        assertThat(created.at("/payload/wholesalerId").asText()).isEqualTo("w1");
 
-        clearInvocations(events);
         mvc.perform(as(body(patch("/products/" + id), "{\"name\":\"Stolen\"}"), "w2", "wholesaler"))
                 .andExpect(status().isForbidden());
         mvc.perform(as(body(post("/products"), "{\"name\":\"\"}"), "w1", "wholesaler"))
                 .andExpect(status().isBadRequest());
-        verify(events, never()).publish(anyString(), anyString(), anyString(), any());
+        mvc.perform(as(body(patch("/products/" + id), "{\"categoryId\":999999}"), "w1", "wholesaler"))
+                .andExpect(status().isBadRequest());
+        assertThat(outbox()).hasSize(1);
 
         mvc.perform(as(body(patch("/products/" + id), "{\"name\":\"Renamed\"}"), "w1", "wholesaler"))
                 .andExpect(status().isOk());
-        verify(events).publish(eq("product.updated"), eq("ProductUpdated"), eq(key),
-                argThat((Map<String, Object> m) -> "Renamed".equals(m.get("name"))));
         mvc.perform(as(delete("/products/" + id), "w1", "wholesaler"))
                 .andExpect(status().isOk());
-        verify(events).publish("product.deleted", "ProductDeleted", key, Map.of("productId", id));
+        rows = outbox();
+        assertThat(rows).extracting(r -> r[0]).containsExactly("product.created", "product.updated", "product.deleted");
+        assertThat(((JsonNode) rows.get(1)[2]).at("/payload/name").asText()).isEqualTo("Renamed");
+        assertThat(((JsonNode) rows.get(2)[2]).get("payload").toString()).isEqualTo("{\"productId\":" + id + "}");
+    }
+
+    @Test
+    void relaySendsInOrderAndKeepsEventsWhileKafkaIsDown() throws Exception {
+        createProduct("w1", 10, "100");
+        createProduct("w1", 10, "200");
+        List<Object[]> written = outbox();
+
+        List<String> attempts = new ArrayList<>();
+        assertThat(relay.relayOnce((topic, key, value) -> attempts.add(key) && false)).isZero();
+        assertThat(attempts).containsExactly((String) written.get(0)[1]); // the second never overtakes the first
+        assertThat(outbox()).hasSize(2);
+
+        List<String> sent = new ArrayList<>();
+        assertThat(relay.relayOnce((topic, key, value) -> sent.add(value))).isEqualTo(2);
+        assertThat(sent).extracting(this::parse).containsExactly((JsonNode) written.get(0)[2], (JsonNode) written.get(1)[2]); // same eventIds
+        assertThat(outbox()).isEmpty();
     }
 }
