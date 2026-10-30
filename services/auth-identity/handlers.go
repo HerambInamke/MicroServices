@@ -7,6 +7,7 @@ import (
 	"net/mail"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/gorilla/mux"
 	"golang.org/x/crypto/bcrypt"
@@ -30,6 +31,7 @@ func (s *Server) routes() *mux.Router {
 	r.HandleFunc("/auth/refresh", s.refresh).Methods("POST")
 	r.HandleFunc("/auth/logout", s.authed(s.logout)).Methods("POST")
 	r.HandleFunc("/auth/me", s.authed(s.me)).Methods("GET")
+	r.HandleFunc("/auth/wallet/challenge", s.authed(s.walletChallenge)).Methods("POST")
 	r.HandleFunc("/auth/wallet/link", s.authed(s.linkWallet)).Methods("POST")
 	r.HandleFunc("/auth/wallet/unlink", s.authed(s.unlinkWallet)).Methods("DELETE")
 	r.HandleFunc("/users/{id}", s.authed(s.getUser)).Methods("GET")
@@ -227,8 +229,8 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request, id identity) {
 	respond(w, http.StatusOK, userView(u), "", "")
 }
 
-// shortcut: links any well-formed address without proving ownership; Phase 2 adds a MetaMask signed-message check.
-func (s *Server) linkWallet(w http.ResponseWriter, r *http.Request, id identity) {
+// walletChallenge returns the message the wallet must personal_sign to prove it owns the address.
+func (s *Server) walletChallenge(w http.ResponseWriter, r *http.Request, id identity) {
 	var req struct {
 		Address string `json:"address"`
 	}
@@ -239,8 +241,37 @@ func (s *Server) linkWallet(w http.ResponseWriter, r *http.Request, id identity)
 		fail(w, http.StatusBadRequest, "INVALID_ADDRESS", "address must be a 0x-prefixed 40-hex-digit wallet address")
 		return
 	}
+	expires := time.Now().Add(challengeTTL).Unix()
+	respond(w, http.StatusOK, map[string]any{
+		"message":   challengeMessage(s.secret, id.userID, strings.ToLower(req.Address), expires),
+		"expiresAt": time.Unix(expires, 0).UTC().Format(time.RFC3339),
+	}, "", "")
+}
+
+// linkWallet links the address only if it signed a fresh challenge issued to this user for it.
+func (s *Server) linkWallet(w http.ResponseWriter, r *http.Request, id identity) {
+	var req struct {
+		Address   string `json:"address"`
+		Message   string `json:"message"`
+		Signature string `json:"signature"`
+	}
+	if !decode(w, r, &req) {
+		return
+	}
+	if !walletRe.MatchString(req.Address) {
+		fail(w, http.StatusBadRequest, "INVALID_ADDRESS", "address must be a 0x-prefixed 40-hex-digit wallet address")
+		return
+	}
 	// Lowercase so checksum/non-checksum forms of one address can't be linked twice.
 	addr := strings.ToLower(req.Address)
+	if !checkChallenge(s.secret, req.Message, id.userID, addr, time.Now()) {
+		fail(w, http.StatusBadRequest, "INVALID_CHALLENGE", "message must be an unexpired challenge from /auth/wallet/challenge for this address")
+		return
+	}
+	if signer, err := recoverAddress(req.Message, req.Signature); err != nil || signer != addr {
+		fail(w, http.StatusBadRequest, "INVALID_SIGNATURE", "signature must be the address's personal_sign of the challenge message")
+		return
+	}
 	switch err := s.store.SetWallet(r.Context(), id.userID, addr); {
 	case errors.Is(err, ErrDuplicate):
 		fail(w, http.StatusConflict, "WALLET_IN_USE", "wallet is already linked to another account")

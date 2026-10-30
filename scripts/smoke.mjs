@@ -1,7 +1,6 @@
 // End-to-end smoke test against the running stack: `docker compose up -d`, then `node scripts/smoke.mjs`.
 // Drives the Phase 1 flow through the API gateway only, as a real client would.
 import assert from 'node:assert/strict';
-import { randomBytes } from 'node:crypto';
 import zlib from 'node:zlib';
 import { Wallet, getBytes } from 'ethers';
 
@@ -43,10 +42,20 @@ assert.equal(me.data.role, 'wholesaler');
 assert.equal((await api('GET', '/auth/me')).status, 401);
 step('signup, login and /me (anonymous rejected)');
 
-const wallet = `0x${randomBytes(20).toString('hex')}`;
-const link = await api('POST', '/auth/wallet/link', { token: wholesaler.token, body: { address: wallet } });
+// Proves ownership like MetaMask would: personal_sign the challenge the server issued for this address.
+async function linkWallet(token, wallet) {
+  const challenge = await api('POST', '/auth/wallet/challenge', { token, body: { address: wallet.address } });
+  assert.equal(challenge.status, 200, JSON.stringify(challenge));
+  const { message } = challenge.data;
+  return api('POST', '/auth/wallet/link', { token, body: { address: wallet.address, message, signature: await wallet.signMessage(message) } });
+}
+
+const wallet = Wallet.createRandom();
+const unproven = await api('POST', '/auth/wallet/link', { token: wholesaler.token, body: { address: wallet.address } });
+assert.equal(unproven.status, 400, JSON.stringify(unproven));
+const link = await linkWallet(wholesaler.token, wallet);
 assert.equal(link.status, 200, JSON.stringify(link));
-step('wallet linked');
+step('wallet linked with a signed challenge (unsigned link refused)');
 
 const admin = await api('POST', '/auth/login', { body: ADMIN });
 assert.equal(admin.status, 200, 'admin seed login failed');
@@ -133,7 +142,7 @@ console.log(`\nAll Phase 1 smoke checks passed. Order id: ${order.data.id}`);
 async function actor(role) {
   const user = await signupAndLogin(role, `${role}-p2`);
   const wallet = Wallet.createRandom();
-  const linked = await api('POST', '/auth/wallet/link', { token: user.token, body: { address: wallet.address } });
+  const linked = await linkWallet(user.token, wallet);
   assert.equal(linked.status, 200, JSON.stringify(linked));
   return { ...user, wallet };
 }

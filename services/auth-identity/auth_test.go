@@ -2,12 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/decred/dcrd/dcrec/secp256k1/v4"
+	"github.com/decred/dcrd/dcrec/secp256k1/v4/ecdsa"
 )
 
 type fakeStore struct {
@@ -278,27 +283,93 @@ func TestMe(t *testing.T) {
 	}
 }
 
+// Private key 1 has a well-known Ethereum address, which pins recoverAddress to the real derivation.
+var (
+	walletKey  = secp256k1.PrivKeyFromBytes([]byte{1})
+	walletAddr = "0x7E5F4552091A69125d5DfCb7b8C2659029395Bdf"
+	otherKey   = secp256k1.PrivKeyFromBytes([]byte{2})
+)
+
+// personalSign signs like MetaMask: EIP-191 hash, 65 bytes r|s|v with v = 27+recid.
+func personalSign(key *secp256k1.PrivateKey, msg string) string {
+	c := ecdsa.SignCompact(key, keccak([]byte(fmt.Sprintf("\x19Ethereum Signed Message:\n%d%s", len(msg), msg))), false)
+	return "0x" + hex.EncodeToString(append(c[1:], c[0]))
+}
+
+func challenge(t *testing.T, s *Server, who, addr string) string {
+	t.Helper()
+	code, out := call(t, s, "POST", "/auth/wallet/challenge", who, `{"address":"`+addr+`"}`)
+	if code != 200 {
+		t.Fatalf("challenge: %d %v", code, out)
+	}
+	return data(out)["message"].(string)
+}
+
+func linkBody(addr, msg, sig string) string {
+	b, _ := json.Marshal(map[string]string{"address": addr, "message": msg, "signature": sig})
+	return string(b)
+}
+
 func TestWallet(t *testing.T) {
 	s := newServer()
 	login(t, s)
 	post(t, s, "/auth/signup", `{"email":"r@b.com","password":"password123","role":"retailer"}`)
-	addr := "0xAbCdEf0123456789abcdef0123456789ABCDEF01"
+	retailer := "id-r@b.com:retailer"
+	addr := walletAddr
+	msg := challenge(t, s, userA, addr)
 
-	code, out := call(t, s, "POST", "/auth/wallet/link", userA, `{"address":"`+addr+`"}`)
+	// Proofs that must not link: each names the error code it should get.
+	expired := challengeMessage(testSecret, "id-a@b.com", strings.ToLower(addr), time.Now().Add(-time.Second).Unix())
+	other := "0x2B5AD5c4795c026514f8317c7a215E218DcCD6cF" // key 2's address
+	rejects := []struct{ name, who, body, code string }{
+		{"wrong signer", userA, linkBody(addr, msg, personalSign(otherKey, msg)), "INVALID_SIGNATURE"},
+		{"garbage signature", userA, linkBody(addr, msg, "0x1234"), "INVALID_SIGNATURE"},
+		{"tampered message", userA, linkBody(addr, msg+" ", personalSign(walletKey, msg+" ")), "INVALID_CHALLENGE"},
+		{"expired", userA, linkBody(addr, expired, personalSign(walletKey, expired)), "INVALID_CHALLENGE"},
+		{"another user's challenge", retailer, linkBody(addr, msg, personalSign(walletKey, msg)), "INVALID_CHALLENGE"},
+		{"another address", userA, linkBody(other, msg, personalSign(otherKey, msg)), "INVALID_CHALLENGE"},
+		{"no proof", userA, `{"address":"` + addr + `"}`, "INVALID_CHALLENGE"},
+	}
+	for _, r := range rejects {
+		if code, out := call(t, s, "POST", "/auth/wallet/link", r.who, r.body); code != 400 || errCode(out) != r.code {
+			t.Errorf("%s: %d %v, want 400 %s", r.name, code, out, r.code)
+		}
+	}
+	// A high-s twin of a valid signature is the same proof in malleable form: refuse it like the ledger does.
+	good := personalSign(walletKey, msg)
+	sig, _ := hex.DecodeString(good[2:])
+	var sv secp256k1.ModNScalar
+	sv.SetByteSlice(sig[32:64])
+	sv.Negate()
+	sb := sv.Bytes()
+	copy(sig[32:64], sb[:])
+	sig[64] ^= 1 // 27 <-> 28
+	if code, _ := call(t, s, "POST", "/auth/wallet/link", userA, linkBody(addr, msg, "0x"+hex.EncodeToString(sig))); code != 400 {
+		t.Errorf("high-s signature: %d", code)
+	}
+
+	code, out := call(t, s, "POST", "/auth/wallet/link", userA, linkBody(addr, msg, good))
 	if code != 200 || data(out)["walletAddress"] != strings.ToLower(addr) {
 		t.Fatalf("link: %d %v", code, out)
 	}
-	// Same address in a different case is still the same wallet.
-	if code, out := call(t, s, "POST", "/auth/wallet/link", "id-r@b.com:retailer", `{"address":"`+strings.ToLower(addr)+`"}`); code != 409 || errCode(out) != "WALLET_IN_USE" {
+	// Same address in a different case is still the same wallet, even with a valid proof.
+	rmsg := challenge(t, s, retailer, strings.ToLower(addr))
+	if code, out := call(t, s, "POST", "/auth/wallet/link", retailer, linkBody(strings.ToLower(addr), rmsg, personalSign(walletKey, rmsg))); code != 409 || errCode(out) != "WALLET_IN_USE" {
 		t.Fatalf("link taken wallet: %d %v", code, out)
 	}
 	for _, bad := range []string{"0x123", "AbCdEf0123456789abcdef0123456789ABCDEF0101", "0xZZCdEf0123456789abcdef0123456789ABCDEF01"} {
 		if code, _ := call(t, s, "POST", "/auth/wallet/link", userA, `{"address":"`+bad+`"}`); code != 400 {
 			t.Errorf("invalid address %s: %d", bad, code)
 		}
+		if code, _ := call(t, s, "POST", "/auth/wallet/challenge", userA, `{"address":"`+bad+`"}`); code != 400 {
+			t.Errorf("challenge for invalid address %s: %d", bad, code)
+		}
 	}
 	if code, _ := call(t, s, "POST", "/auth/wallet/link", "", `{"address":"`+addr+`"}`); code != 401 {
 		t.Fatalf("anonymous link: %d", code)
+	}
+	if code, _ := call(t, s, "POST", "/auth/wallet/challenge", "", `{"address":"`+addr+`"}`); code != 401 {
+		t.Fatalf("anonymous challenge: %d", code)
 	}
 	if code, _ := call(t, s, "DELETE", "/auth/wallet/unlink", userA, ""); code != 200 {
 		t.Fatalf("unlink: %d", code)
