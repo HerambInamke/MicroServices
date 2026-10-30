@@ -1,6 +1,6 @@
 # Pending work: Provenance (MicroServices)
 
-Snapshot: 2026-10-26, `main` at the merge of PR #21. Phases 1–5 are built and merged.
+Snapshot: 2026-10-30. D1, D2 (Postgres services), D3, D6 and B1 done on 2026-10-30; see below. Phases 1–5 are built and merged.
 Phase 6 (OSS polish) is mostly done. Smoke test Phases 1–5 and CI (17 jobs) are green.
 
 To resume: open this file and pick a section. Items are grouped by **what blocks them**.
@@ -37,8 +37,8 @@ To resume: open this file and pick a section. Items are grouped by **what blocks
 
 ## B. Waiting for your go-ahead (outward-facing)
 
-### B1. "Good first issue" labels and issues (last Phase 6 item)
-Create the label on GitHub, then open issues for well-scoped items from section D (for example D3 or D6), so contributors can pick them up.
+### B1. "Good first issue" issues: done
+Filed #26 (D7, analytics backfill) and #27 (D9, ledger history paging) with the `good first issue` label.
 
 ### B2. Human-review checkpoints
 Never-ticked "Human review" boxes, for you to look over and tick:
@@ -66,15 +66,12 @@ Never-ticked "Human review" boxes, for you to look over and tick:
 
 | # | Item | Where | Risk if left |
 |---|---|---|---|
-| D1 | **Wallet linking does not prove ownership.** Any well-formed address can be linked. Add a signed-message check (sign a nonce with MetaMask) on `POST /auth/wallet/link`. | `services/auth-identity/handlers.go` | Medium: someone can claim an address they don't own (they still can't sign handoffs with it) |
-| D2 | **No outbox for Kafka events.** Events are published after the DB write; if Kafka is down at that moment, the event is lost (inbox, search, analytics, trust score miss it). | order-payment `clients.py`, catalog `EventPublisher.java`, ledger `events.go`, chat `events.js` | Medium in production |
-| D3 | **Rate limiter is in memory** per gateway instance. Move it to Redis before running more than one gateway. | `services/api-gateway/app.js` | Low (single instance) |
+| D2 | **No outbox for ledger and chat events.** order-payment and catalog have a transactional outbox now; the ledger (immudb) and chat (standalone Mongo) still publish after the write, so an event is lost if Kafka is down at that moment. Spec #23, tickets #24 (ledger) and #25 (chat: needs a replica-set decision). | ledger `events.go`, chat `events.js` | Medium in production |
 | D4 | **Ledger handoff lock is in process.** It is correct only with one ledger replica; use an immudb precondition before scaling out. | `services/provenance-ledger/handlers.go` | Low (single instance) |
 | D5 | **No schema migrations** for order-payment (create_all) and media-upload (IF NOT EXISTS). Adopt Alembic / a migration tool at the first schema change. | `order-payment/app.py`, `media-upload/store.go` | Low now |
-| D6 | **Deleted designs stay in search** until an admin reindex. Make counterfeit-detection publish `design.deleted` and have search consume it. | counterfeit-detection, search | Low |
-| D7 | **Analytics:** if the catalog is unreachable during ingest, the line is filed under category 0 for good. Add a backfill job. | `services/analytics/ingest.py` | Low |
+| D7 | **Analytics:** if the catalog is unreachable during ingest, the line is filed under category 0 for good. Add a backfill job (#26). | `services/analytics/ingest.py` | Low |
 | D8 | **Weaviate paging** is offset-based, unordered, capped at 10k. Switch to the cursor API for large registries. | `counterfeit-detection/store.py` | Low |
-| D9 | **Ledger history scan** caps at a handful of actors per piece. Page it if pieces get long histories. | `provenance-ledger/store.go` | Low |
+| D9 | **Ledger history scan** caps at 1000 entries per piece. Page it if pieces get long histories (#27). | `provenance-ledger/store.go` | Low |
 | D10 | **Trust-score weights** (0.7 rating / 0.3 fulfilment, prior m=3, C=5) are a first guess; tune with real data. | `services/reviews/score.js` | Product |
 
 ---
@@ -96,6 +93,8 @@ Never-ticked "Human review" boxes, for you to look over and tick:
   still hold commits with the old attribution trailer (local only; already deleted on GitHub). To remove them:
   `git branch -D phase5-chat phase5-reviews phase5-wrapup phase6-ci phase6-service-docs`.
 - Merged local branches `inventory-internal-guard`, `design-delete`, `offer-response-notify` can be deleted (`git branch -d ...`).
+- Product events (`product.created` / `product.deleted`) travel on separate topics, so a create and a quick delete
+  can reach search out of order. Designs use one topic (`design.changed`) for this reason; products could follow.
 - Not yet security-reviewed: auth `GET /users/:id` exposure rules, and order-payment's party check (reviews relies on it).
 
 ---
