@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"sort"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,19 +21,54 @@ import (
 type fakeStore struct {
 	pieces map[string]Piece
 	events map[string][]Event
+	outbox map[string]Outgoing // store key -> event
 }
 
 func newFakeStore() *fakeStore {
-	return &fakeStore{pieces: map[string]Piece{}, events: map[string][]Event{}}
+	return &fakeStore{pieces: map[string]Piece{}, events: map[string][]Event{}, outbox: map[string]Outgoing{}}
 }
 
-func (f *fakeStore) Create(_ context.Context, p Piece, first Event) error {
+func (f *fakeStore) Create(_ context.Context, p Piece, first Event, out Outgoing) error {
 	if _, ok := f.pieces[p.ID]; ok {
 		return errors.New("exists")
 	}
 	f.pieces[p.ID] = p
 	f.events[p.ID] = []Event{first}
+	f.outbox[string(outboxKey(p.ID, first.Index))] = out
 	return nil
+}
+
+func (f *fakeStore) Pending(_ context.Context, limit int) ([]Pending, error) {
+	keys := make([]string, 0, len(f.outbox))
+	for k := range f.outbox {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // immudb scans in key order too
+	var out []Pending
+	for _, k := range keys {
+		if len(out) == limit {
+			break
+		}
+		out = append(out, Pending{StoreKey: []byte(k), Outgoing: f.outbox[k]})
+	}
+	return out, nil
+}
+
+func (f *fakeStore) Sent(_ context.Context, storeKey []byte) error {
+	delete(f.outbox, string(storeKey))
+	return nil
+}
+
+// published lists the outbox as {topic, eventType, key}, in relay order.
+func (f *fakeStore) published() []published {
+	pending, _ := f.Pending(context.Background(), len(f.outbox))
+	var out []published
+	for _, p := range pending {
+		var env struct{ EventType string }
+		json.Unmarshal(p.Value, &env)
+		out = append(out, published{p.Topic, env.EventType, p.Key})
+	}
+	return out
 }
 
 func (f *fakeStore) Get(_ context.Context, id string) (Piece, error) {
@@ -42,7 +79,7 @@ func (f *fakeStore) Get(_ context.Context, id string) (Piece, error) {
 	return p, nil
 }
 
-func (f *fakeStore) Update(_ context.Context, p Piece, e *Event) error {
+func (f *fakeStore) Update(_ context.Context, p Piece, e *Event, out *Outgoing) error {
 	if _, ok := f.pieces[p.ID]; !ok {
 		return ErrNotFound
 	}
@@ -51,6 +88,7 @@ func (f *fakeStore) Update(_ context.Context, p Piece, e *Event) error {
 			return errors.New("event index already written")
 		}
 		f.events[p.ID] = append(f.events[p.ID], *e)
+		f.outbox[string(outboxKey(p.ID, e.Index))] = *out
 	}
 	f.pieces[p.ID] = p
 	return nil
@@ -102,16 +140,10 @@ func (f *fakeChain) History(_ context.Context, pieceID [32]byte) ([]ChainEvent, 
 
 type published struct{ topic, eventType, key string }
 
-type fakePublisher struct{ sent []published }
-
-func (f *fakePublisher) Publish(topic, eventType, key string, _ any) {
-	f.sent = append(f.sent, published{topic, eventType, key})
-}
-
-func newTestServer() (*Server, *fakeStore, *fakePublisher) {
-	st, pub := newFakeStore(), &fakePublisher{}
+func newTestServer() (*Server, *fakeStore) {
+	st := newFakeStore()
 	chain := &fakeChain{recorded: map[[32]byte]string{}, pieces: map[[32]byte][]ChainEvent{}}
-	return &Server{store: st, events: pub, users: fakeUsers{}, chain: chain}, st, pub
+	return &Server{store: st, users: fakeUsers{}, chain: chain}, st
 }
 
 func do(t *testing.T, s *Server, method, path, userID, role, body string) (int, map[string]any) {
@@ -131,7 +163,7 @@ func do(t *testing.T, s *Server, method, path, userID, role, body string) (int, 
 }
 
 func TestRegisterPiece(t *testing.T) {
-	s, st, pub := newTestServer()
+	s, st := newTestServer()
 	code, env := do(t, s, "POST", "/pieces", "w1", "weaver", `{"productId":42,"description":"Banarasi silk"}`)
 	if code != http.StatusCreated {
 		t.Fatalf("want 201, got %d: %v", code, env)
@@ -144,26 +176,26 @@ func TestRegisterPiece(t *testing.T) {
 	if evs := st.events[id]; len(evs) != 1 || evs[0].Type != "registered" || evs[0].UserID != "w1" {
 		t.Fatalf("registration event not stored: %v", evs)
 	}
-	if len(pub.sent) != 1 || pub.sent[0] != (published{"piece.registered", "PieceRegistered", id}) {
-		t.Fatalf("unexpected events: %v", pub.sent)
+	if sent := st.published(); len(sent) != 1 || sent[0] != (published{"piece.registered", "PieceRegistered", id}) {
+		t.Fatalf("unexpected events: %v", sent)
 	}
 }
 
 func TestRegisterRequiresWeaver(t *testing.T) {
-	s, _, pub := newTestServer()
+	s, st := newTestServer()
 	if code, _ := do(t, s, "POST", "/pieces", "", "", `{}`); code != http.StatusUnauthorized {
 		t.Fatalf("no identity: want 401, got %d", code)
 	}
 	if code, _ := do(t, s, "POST", "/pieces", "r1", "retailer", `{}`); code != http.StatusForbidden {
 		t.Fatalf("retailer: want 403, got %d", code)
 	}
-	if len(pub.sent) != 0 {
-		t.Fatalf("no event expected, got %v", pub.sent)
+	if sent := st.published(); len(sent) != 0 {
+		t.Fatalf("no event expected, got %v", sent)
 	}
 }
 
 func TestRegisterValidatesBody(t *testing.T) {
-	s, _, _ := newTestServer()
+	s, _ := newTestServer()
 	if code, _ := do(t, s, "POST", "/pieces", "w1", "weaver", `not json`); code != http.StatusBadRequest {
 		t.Fatalf("bad JSON: want 400, got %d", code)
 	}
@@ -180,7 +212,7 @@ func TestRegisterValidatesBody(t *testing.T) {
 }
 
 func TestGetPieceIsPublic(t *testing.T) {
-	s, _, _ := newTestServer()
+	s, _ := newTestServer()
 	_, env := do(t, s, "POST", "/pieces", "w1", "weaver", `{}`)
 	id := env["data"].(map[string]any)["id"].(string)
 
@@ -205,10 +237,11 @@ func TestImmuStore(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := Piece{ID: uuid.NewString(), WeaverID: "w1", OwnerID: "w1", OwnerRole: "weaver", EventCount: 1, CreatedAt: time.Now().UTC()}
-	if err := st.Create(ctx, p, Event{Type: "registered", Role: "weaver", UserID: "w1"}); err != nil {
+	registered := newOutgoing("piece.registered", "PieceRegistered", p.ID, map[string]any{"pieceId": p.ID})
+	if err := st.Create(ctx, p, Event{Type: "registered", Role: "weaver", UserID: "w1"}, registered); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Create(ctx, p, Event{}); err == nil {
+	if err := st.Create(ctx, p, Event{}, registered); err == nil {
 		t.Fatal("creating the same piece twice must fail")
 	}
 	got, err := st.Get(ctx, p.ID)
@@ -216,11 +249,38 @@ func TestImmuStore(t *testing.T) {
 		t.Fatalf("get: %v %v", got, err)
 	}
 	p.OwnerID = "d1"
-	if err := st.Update(ctx, p, &Event{Index: 1, Type: "handoff", UserID: "d1"}); err != nil {
+	handoff := newOutgoing("piece.handoff.signed", "PieceHandoffSigned", p.ID, map[string]any{"pieceId": p.ID})
+	if err := st.Update(ctx, p, &Event{Index: 1, Type: "handoff", UserID: "d1"}, &handoff); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Update(ctx, p, &Event{Index: 1, Type: "handoff", UserID: "x"}); err == nil {
+	if err := st.Update(ctx, p, &Event{Index: 1, Type: "handoff", UserID: "x"}, &handoff); err == nil {
 		t.Fatal("an event index must not be written twice")
+	}
+	// The outbox holds this piece's two events in history order (other runs may have left their own).
+	mine := func() []Pending {
+		all, err := st.Pending(ctx, 1000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []Pending
+		for _, e := range all {
+			if strings.HasPrefix(string(e.StoreKey), "outbox:"+p.ID+":") {
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+	if pending := mine(); len(pending) != 2 || string(pending[0].Value) != string(registered.Value) || string(pending[1].Value) != string(handoff.Value) {
+		t.Fatalf("outbox: %+v", pending)
+	}
+	if err := st.Sent(ctx, outboxKey(p.ID, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if pending := mine(); len(pending) != 1 || pending[0].Topic != "piece.handoff.signed" {
+		t.Fatalf("sent entry still pending: %+v", pending)
+	}
+	if err := st.Sent(ctx, outboxKey(p.ID, 1)); err != nil {
+		t.Fatal(err)
 	}
 	if got, _ := st.Get(ctx, p.ID); got.OwnerID != "d1" {
 		t.Fatalf("update not applied: %+v", got)
@@ -228,7 +288,7 @@ func TestImmuStore(t *testing.T) {
 	if evs, err := st.History(ctx, p.ID); err != nil || len(evs) != 2 || evs[0].Type != "registered" || evs[1].UserID != "d1" {
 		t.Fatalf("history: %+v (%v)", evs, err)
 	}
-	if err := st.Update(ctx, Piece{ID: uuid.NewString()}, nil); err == nil {
+	if err := st.Update(ctx, Piece{ID: uuid.NewString()}, nil, nil); err == nil {
 		t.Fatal("updating a missing piece must fail")
 	}
 	if _, err := st.Get(ctx, uuid.NewString()); !errors.Is(err, ErrNotFound) {

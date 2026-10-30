@@ -64,11 +64,11 @@ func main() {
 		return err
 	})
 
+	go runRelay(store, newKafkaSender(requireEnv("KAFKA_BROKERS")).Send)
 	srv := &Server{
-		store:  store,
-		events: newKafkaPublisher(requireEnv("KAFKA_BROKERS")),
-		users:  newAuthClient(requireEnv("AUTH_URL")),
-		chain:  chain,
+		store: store,
+		users: newAuthClient(requireEnv("AUTH_URL")),
+		chain: chain,
 	}
 
 	log.Printf("Provenance Ledger Service starting on port %s", port)

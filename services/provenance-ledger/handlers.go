@@ -19,11 +19,10 @@ import (
 var roleRank = map[string]int{"weaver": 0, "dye-house": 1, "wholesaler": 2, "retailer": 3}
 
 type Server struct {
-	store  Store
-	events Publisher
-	users  Users
-	chain  Chain
-	locks  sync.Map // piece id -> *sync.Mutex
+	store Store // also holds the event outbox; runRelay sends it to Kafka
+	users Users
+	chain Chain
+	locks sync.Map // piece id -> *sync.Mutex
 }
 
 // lockPiece serialises state changes on one piece.
@@ -102,13 +101,13 @@ func (s *Server) register(w http.ResponseWriter, r *http.Request, userID, role s
 	}
 	// The registration is the first history entry; it is off-chain, handoffs are anchored on-chain.
 	e := Event{Index: 0, Type: "registered", Role: "weaver", UserID: userID, Timestamp: now}
-	if err := s.store.Create(r.Context(), p, e); err != nil {
+	out := newOutgoing("piece.registered", "PieceRegistered", p.ID, map[string]any{
+		"pieceId": p.ID, "productId": p.ProductID, "weaverId": userID, "registeredAt": now,
+	})
+	if err := s.store.Create(r.Context(), p, e, out); err != nil {
 		internal(w, err)
 		return
 	}
-	s.events.Publish("piece.registered", "PieceRegistered", p.ID, map[string]any{
-		"pieceId": p.ID, "productId": p.ProductID, "weaverId": userID, "registeredAt": now,
-	})
 	respond(w, http.StatusCreated, p, "", "")
 }
 
@@ -247,7 +246,7 @@ func (s *Server) offer(w http.ResponseWriter, r *http.Request, userID, role stri
 	h := handoffHash(chainPieceID(p.ID), prev, userID, to.ID, to.Role)
 	// A new offer replaces any earlier one, so the owner can redirect an unaccepted handoff.
 	p.Pending = &Offer{FromUserID: userID, ToUserID: to.ID, Role: to.Role, DataHash: common.Hash(h).Hex(), OfferedAt: time.Now().UTC()}
-	if err := s.store.Update(r.Context(), p, nil); err != nil {
+	if err := s.store.Update(r.Context(), p, nil, nil); err != nil {
 		internal(w, err)
 		return
 	}
@@ -317,15 +316,15 @@ func (s *Server) accept(w http.ResponseWriter, r *http.Request, userID, role str
 		DataHash: offer.DataHash, TxHash: txHash, Timestamp: time.Now().UTC(),
 	}
 	p.OwnerID, p.OwnerRole, p.EventCount, p.LastHash, p.Pending = userID, offer.Role, p.EventCount+1, offer.DataHash, nil
-	if err := s.store.Update(ctx, p, &e); err != nil {
+	out := newOutgoing("piece.handoff.signed", "PieceHandoffSigned", p.ID, map[string]any{
+		"pieceId": p.ID, "index": e.Index, "fromUserId": offer.FromUserID, "toUserId": userID, "role": e.Role,
+		"actorAddress": e.ActorAddress, "dataHash": e.DataHash, "txHash": txHash, "signedAt": e.Timestamp,
+	})
+	if err := s.store.Update(ctx, p, &e, &out); err != nil {
 		// The offer is still stored, so repeating the request finds the tx on-chain and mirrors it.
 		log.Printf("handoff for %s is on-chain in %s but not mirrored: %v", p.ID, txHash, err)
 		fail(w, http.StatusInternalServerError, "MIRROR_FAILED", "recorded on-chain in tx "+txHash+" but not saved; retry the same request")
 		return
 	}
-	s.events.Publish("piece.handoff.signed", "PieceHandoffSigned", p.ID, map[string]any{
-		"pieceId": p.ID, "index": e.Index, "fromUserId": offer.FromUserID, "toUserId": userID, "role": e.Role,
-		"actorAddress": e.ActorAddress, "dataHash": e.DataHash, "txHash": txHash, "signedAt": e.Timestamp,
-	})
 	respond(w, http.StatusOK, e, "", "")
 }
