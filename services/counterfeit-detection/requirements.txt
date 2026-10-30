@@ -9,3 +9,4 @@ torchvision==0.19.1+cpu
 open_clip_torch==2.26.1
 numpy==1.26.4
 pillow==10.4.0
+confluent-kafka==2.3.0

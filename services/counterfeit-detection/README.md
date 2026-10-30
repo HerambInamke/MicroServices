@@ -12,11 +12,16 @@ wholesaler cannot register a design that matches one already registered.
 | `POST /designs` `{productId, mediaId}` | the product's wholesaler (409 `DESIGN_CONFLICT` if another seller's design matches) |
 | `POST /designs/match` (multipart image) → best matches with scores | logged-in user |
 | `GET /designs`, `GET /designs/:id` | public |
-| `DELETE /designs/:id` | the design's wholesaler or an admin (a deleted design stays in search until the next admin reindex) |
+| `DELETE /designs/:id` | the design's wholesaler or an admin |
+
+## Events
+
+Publishes `design.registered` `{designId, productId, productName, wholesalerId}` and `design.deleted`
+`{designId}`, so Search lists designs as they change (an admin reindex still rebuilds everything).
 
 ## Configuration
 
-`WEAVIATE_URL`, `CATALOG_URL`, `MEDIA_URL`, `PORT`, and `MATCH_THRESHOLD` (optional).
+`WEAVIATE_URL`, `CATALOG_URL`, `MEDIA_URL`, `KAFKA_BROKERS`, `PORT`, and `MATCH_THRESHOLD` (optional).
 
 **Known limitation:** the default threshold of 0.9 is a placeholder. It has not been calibrated on real saree
 photos yet: on synthetic patterns, CLIP could not separate designs reliably.

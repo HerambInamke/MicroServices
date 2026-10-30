@@ -297,6 +297,10 @@ assert.equal(found.wholesalerId, wholesaler.id);
 assert.ok((await api('GET', `/search/suggest?q=${encodeURIComponent(paithaniName.slice(0, 6))}`)).data.length > 0);
 step(`new product searchable via product.created (${paithaniName})`);
 
+const designSearch = () => api('GET', `/search?q=${encodeURIComponent('Kanjeevaram')}&type=design`);
+await eventually('design in search', async () => (await designSearch()).data?.some((d) => d.id === design.data.id));
+step('registered design searchable via design.registered (no reindex)');
+
 assert.equal((await api('POST', '/search/reindex', { token: wholesaler.token })).status, 403);
 const reindex = await api('POST', '/search/reindex', { token: adminToken });
 assert.equal(reindex.status, 200, JSON.stringify(reindex));
@@ -402,6 +406,7 @@ assert.equal((await api('DELETE', `/designs/${design.data.id}`, { token: copier.
 const removed = await api('DELETE', `/designs/${design.data.id}`, { token: wholesaler.token });
 assert.equal(removed.status, 200, JSON.stringify(removed));
 assert.equal((await api('GET', `/designs/${design.data.id}`)).status, 404);
-step('only the owner can delete the design; deleted so the smoke can run again');
+await eventually('design gone from search', async () => !(await designSearch()).data?.some((d) => d.id === design.data.id));
+step('only the owner can delete the design; deleted (and gone from search via design.deleted) so the smoke can run again');
 
 console.log('\nAll Phase 5 smoke checks passed.');
