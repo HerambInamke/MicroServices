@@ -104,22 +104,32 @@ class RazorpayClient:
 
 
 class KafkaPublisher:
-    """Publishes the shared event envelope from schemas/events.json."""
+    """Sends outbox rows (the shared envelope from schemas/events.json) for outbox.relay_once."""
 
     def __init__(self, brokers: str):
         from confluent_kafka import Producer  # imported lazily so tests don't need librdkafka
 
         self._producer = Producer({"bootstrap.servers": brokers, "enable.idempotence": True})
 
-    def publish(self, topic: str, event_type: str, key: str, payload: dict) -> None:
-        # shortcut: published after the DB commit without an outbox, so an event is lost if Kafka is down at that moment; add a transactional outbox before consumers depend on it.
-        event = envelope(event_type, payload)
+    def send(self, topic: str, key: str, value: str) -> bool:
+        """True once Kafka acknowledged the message. One at a time, so the outbox order is kept."""
+        failed = []
         try:
-            self._producer.produce(topic, key=key.encode(), value=json.dumps(event, default=str).encode(), on_delivery=_on_delivery)
+            self._producer.produce(topic, key=key.encode(), value=value.encode(),
+                                   on_delivery=lambda err, msg: err is not None and failed.append(err))
             if self._producer.flush(5) > 0:
-                log.error("event %s for %s not delivered within timeout", event_type, key)
-        except Exception:  # noqa: BLE001 - the DB change is already committed; never fail the request over an event
-            log.exception("could not publish %s for %s", event_type, key)
+                # Drop it from the local queue: the outbox row stays and is resent, so it must not pile up here too.
+                self._producer.purge()
+                self._producer.flush(0)
+                log.warning("kafka did not acknowledge %s for %s in time; will retry", topic, key)
+                return False
+        except Exception:  # noqa: BLE001 - e.g. local queue full; the outbox row stays and is retried
+            log.exception("could not send %s for %s", topic, key)
+            return False
+        if failed:
+            log.warning("kafka delivery failed for %s %s: %s; will retry", topic, key, failed[0])
+            return False
+        return True
 
 
 def envelope(event_type: str, payload: dict) -> dict:
@@ -130,8 +140,3 @@ def envelope(event_type: str, payload: dict) -> dict:
         "eventType": event_type,
         "payload": payload,
     }
-
-
-def _on_delivery(err, msg) -> None:
-    if err is not None:
-        log.error("kafka delivery failed for %s: %s", msg.topic(), err)

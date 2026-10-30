@@ -1,6 +1,7 @@
 import logging
 import os
 import sys
+import threading
 import time
 
 from sqlalchemy import create_engine, text
@@ -8,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from app import create_app, init_db
 from clients import CatalogClient, InventoryClient, KafkaPublisher, RazorpayClient
+from outbox import run_relay
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("order-payment")
@@ -45,11 +47,13 @@ def build_app():
     if razorpay is None:
         log.warning("RAZORPAY_KEY_ID/RAZORPAY_KEY_SECRET not set: payment endpoints will return 503")
 
+    sessions = sessionmaker(engine, expire_on_commit=False)
+    kafka = KafkaPublisher(require_env("KAFKA_BROKERS"))
+    threading.Thread(target=run_relay, args=(sessions, kafka.send), daemon=True).start()
     return create_app(
-        sessionmaker(engine, expire_on_commit=False),
+        sessions,
         catalog=CatalogClient(require_env("CATALOG_URL")),
         inventory=InventoryClient(require_env("INVENTORY_URL")),
-        publisher=KafkaPublisher(require_env("KAFKA_BROKERS")),
         razorpay=razorpay,
         webhook_secret=os.getenv("RAZORPAY_WEBHOOK_SECRET", ""),
     )

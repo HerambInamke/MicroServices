@@ -18,6 +18,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from clients import CatalogError, InventoryError, PaymentProviderError
 from models import Base, Order, OrderItem, Payment
+from outbox import enqueue
 
 log = logging.getLogger("order-payment")
 
@@ -88,9 +89,10 @@ class StatusChange(BaseModel):
     status: Literal["confirmed", "cancelled", "shipped", "delivered"]
 
 
-def create_app(session_factory: sessionmaker, catalog, publisher, razorpay=None, webhook_secret: str = "", *, inventory) -> FastAPI:
+def create_app(session_factory: sessionmaker, catalog, razorpay=None, webhook_secret: str = "", *, inventory) -> FastAPI:
     """razorpay/webhook_secret may be absent: payment endpoints then answer 503 instead of failing.
-    inventory is required: an order is never placed without a stock decision."""
+    inventory is required: an order is never placed without a stock decision.
+    Events go to the outbox in the same transaction as the change (see outbox.py)."""
     app = FastAPI(title="Order & Payment Service", description="Provenance Order/Payment API")
 
     def db():
@@ -162,14 +164,14 @@ def create_app(session_factory: sessionmaker, catalog, publisher, razorpay=None,
             raise ApiError(e.status, e.code, e.message) from e
         session.add(order)
         try:
+            session.flush()  # applies column defaults (currency) that the event reads
+            enqueue(session, "order.placed", "OrderPlaced", order.id, event_payload(order) | {
+                "items": [{"productId": q.product_id, "qty": q.qty, "unitPrice": str(q.unit_price)} for q in quotes]
+            })
             session.commit()
         except Exception:
             inventory.release(order.id)
             raise
-        payload = event_payload(order) | {
-            "items": [{"productId": q.product_id, "qty": q.qty, "unitPrice": str(q.unit_price)} for q in quotes]
-        }
-        publisher.publish("order.placed", "OrderPlaced", order.id, payload)
         return ok(order_view(order), 201)
 
     @app.get("/orders/{order_id}")
@@ -221,10 +223,10 @@ def create_app(session_factory: sessionmaker, catalog, publisher, razorpay=None,
             raise ApiError(409, "INVALID_TRANSITION", f"cannot move an order from {order.status} to {req.status}")
         previous = order.status
         order.status = req.status
+        enqueue(session, "order.status.changed", "OrderStatusChanged", order.id, event_payload(order) | {"previousStatus": previous})
         session.commit()
         if order.status == "cancelled":
             inventory.release(order.id)
-        publisher.publish("order.status.changed", "OrderStatusChanged", order.id, event_payload(order) | {"previousStatus": previous})
         return ok(order_view(order))
 
     @app.post("/orders/{order_id}/payment")
@@ -280,9 +282,9 @@ def create_app(session_factory: sessionmaker, catalog, publisher, razorpay=None,
         else:
             # e.g. cancelled while the buyer was paying: money taken but order not live, needs a manual refund.
             log.error("payment captured for order %s in status %s; refund required", order.id, order.status)
+        enqueue(session, "payment.completed", "PaymentCompleted", order.id,
+                event_payload(order) | {"razorpayPaymentId": rzp_payment_id, "amountPaise": amount})
         session.commit()
-        publisher.publish("payment.completed", "PaymentCompleted", order.id,
-                          event_payload(order) | {"razorpayPaymentId": rzp_payment_id, "amountPaise": amount})
         return "captured"
 
     @app.post("/payments/webhook")

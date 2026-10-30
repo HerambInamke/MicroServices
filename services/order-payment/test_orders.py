@@ -9,13 +9,14 @@ from decimal import Decimal
 import psycopg
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 from app import create_app
-from clients import CatalogError, InventoryError, PaymentProviderError, Quote, envelope
-from models import Base
+from clients import CatalogError, InventoryError, PaymentProviderError, Quote
+from models import Base, OutboxEvent
+from outbox import RELAY_LOCK, relay_once
 
 WEBHOOK_SECRET = "whsec_test"
 
@@ -59,12 +60,16 @@ class FakeInventory:
                 self.stock[pid] += qty
 
 
-class FakePublisher:
-    def __init__(self):
-        self.events = []
+class Outbox:
+    """Reads the events the app committed to the outbox table, oldest first."""
 
-    def publish(self, topic, event_type, key, payload):
-        self.events.append((topic, envelope(event_type, payload)))
+    def __init__(self, engine):
+        self.sessions = sessionmaker(engine)
+
+    @property
+    def events(self):
+        with self.sessions() as s:
+            return [(r.topic, json.loads(r.event)) for r in s.scalars(select(OutboxEvent).order_by(OutboxEvent.id))]
 
     def topics(self):
         return [t for t, _ in self.events]
@@ -101,11 +106,10 @@ def engine():
 def ctx(engine):
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
-    publisher, razorpay = FakePublisher(), FakeRazorpay()
-    catalog, inventory = FakeCatalog(), FakeInventory()
-    app = create_app(sessionmaker(engine, expire_on_commit=False), catalog, publisher, razorpay, WEBHOOK_SECRET, inventory=inventory)
+    razorpay, catalog, inventory = FakeRazorpay(), FakeCatalog(), FakeInventory()
+    app = create_app(sessionmaker(engine, expire_on_commit=False), catalog, razorpay, WEBHOOK_SECRET, inventory=inventory)
     client = TestClient(app)
-    return {"client": client, "publisher": publisher, "razorpay": razorpay, "catalog": catalog, "inventory": inventory, "engine": engine}
+    return {"client": client, "outbox": Outbox(engine), "razorpay": razorpay, "catalog": catalog, "inventory": inventory, "engine": engine}
 
 
 def as_user(user_id, role):
@@ -133,7 +137,7 @@ def test_place_order_prices_server_side_and_publishes(ctx):
     assert order["retailerId"] == "r1"
     assert Decimal(str(order["total"])) == Decimal("1149.97")  # 10 x 100.00 + 3 x 49.99; client price ignored
 
-    topic, event = ctx["publisher"].events[0]
+    topic, event = ctx["outbox"].events[0]
     assert topic == "order.placed"
     # Required fields of the shared envelope in schemas/events.json.
     assert {"eventId", "timestamp", "sourceService", "eventType", "payload"} <= event.keys()
@@ -158,7 +162,7 @@ def test_place_order_rejects(ctx, items, status, err):
     res = ctx["client"].post("/orders", json={"items": items}, headers=RETAILER)
     assert res.status_code == status, res.text
     assert code(res) == err
-    assert ctx["publisher"].events == []
+    assert ctx["outbox"].events == []
 
 
 def test_place_order_requires_retailer_and_catalog(ctx):
@@ -179,7 +183,7 @@ def test_stock_is_reserved_and_released_on_cancel(ctx):
 
     res = place(c, [{"productId": 1, "qty": 10}])
     assert (res.status_code, code(res)) == (409, "OUT_OF_STOCK")
-    assert len(ctx["publisher"].events) == 1  # only the first order was published
+    assert len(ctx["outbox"].events) == 1  # only the first order was published
 
     order_id = first.json()["data"]["id"]
     assert c.patch(f"/orders/{order_id}/status", json={"status": "cancelled"}, headers=WHOLESALER).status_code == 200
@@ -223,7 +227,7 @@ def test_list_is_scoped_to_caller(ctx):
 
 
 def test_status_transitions(ctx):
-    c, pub = ctx["client"], ctx["publisher"]
+    c, pub = ctx["client"], ctx["outbox"]
     order_id = place(c).json()["data"]["id"]
     patch = lambda status, headers=WHOLESALER: c.patch(f"/orders/{order_id}/status", json={"status": status}, headers=headers)
 
@@ -254,7 +258,7 @@ def webhook(client, rzp_order_id, amount, event="payment.captured", signature=No
 
 
 def test_payment_flow(ctx):
-    c, pub, rzp = ctx["client"], ctx["publisher"], ctx["razorpay"]
+    c, pub, rzp = ctx["client"], ctx["outbox"], ctx["razorpay"]
     order_id = place(c).json()["data"]["id"]
 
     assert c.post(f"/orders/{order_id}/payment", headers=as_user("r2", "retailer")).status_code == 403
@@ -304,12 +308,65 @@ def test_webhook_ignores_unknown_and_unrelated_events(ctx):
 
 def test_payments_not_configured(engine):
     Base.metadata.create_all(engine)
-    app = create_app(sessionmaker(engine), FakeCatalog(), FakePublisher(), razorpay=None, webhook_secret="", inventory=FakeInventory())
+    app = create_app(sessionmaker(engine), FakeCatalog(), razorpay=None, webhook_secret="", inventory=FakeInventory())
     c = TestClient(app)
     order_id = place(c).json()["data"]["id"]
     res = c.post(f"/orders/{order_id}/payment", headers=RETAILER)
     assert res.status_code == 503 and code(res) == "PAYMENTS_NOT_CONFIGURED"
     assert webhook(c, "x", 1).status_code == 503
+
+
+class FakeKafka:
+    """send() fails while down; records what Kafka acknowledged."""
+
+    def __init__(self):
+        self.down, self.sent = False, []
+
+    def send(self, topic, key, value):
+        if self.down:
+            return False
+        self.sent.append((topic, key, json.loads(value)))
+        return True
+
+
+def test_relay_survives_kafka_outage_in_order(ctx):
+    c, outbox, kafka = ctx["client"], ctx["outbox"], FakeKafka()
+    sessions = sessionmaker(ctx["engine"])
+    order_id = place(c).json()["data"]["id"]
+    c.patch(f"/orders/{order_id}/status", json={"status": "confirmed"}, headers=WHOLESALER)
+    written = outbox.events
+
+    kafka.down = True
+    assert relay_once(sessions, kafka.send) == 0
+    assert outbox.events == written  # nothing lost while Kafka is down
+
+    kafka.down = False
+    assert relay_once(sessions, kafka.send) == 2
+    assert [(t, e) for t, _, e in kafka.sent] == written  # same order, same eventIds
+    assert kafka.sent[0][1] == order_id  # keyed by order, so one order's events share a partition
+    assert outbox.events == []
+    assert relay_once(sessions, kafka.send) == 0
+
+
+def test_relay_stops_at_first_failure_so_events_never_overtake(ctx):
+    c, outbox = ctx["client"], ctx["outbox"]
+    sessions = sessionmaker(ctx["engine"])
+    place(c), place(c)
+    first, second = outbox.events
+    calls = []
+    flaky = lambda topic, key, value: calls.append(key) or len(calls) > 1  # first send fails
+    assert relay_once(sessions, flaky) == 0
+    assert calls == [first[1]["payload"]["orderId"]]  # the second was not tried ahead of the first
+    assert outbox.events == [first, second]
+
+
+def test_only_one_relay_runs_at_a_time(ctx):
+    place(ctx["client"])
+    kafka, sessions = FakeKafka(), sessionmaker(ctx["engine"])
+    with sessions() as other:
+        assert other.scalar(text("SELECT pg_try_advisory_xact_lock(:k)"), {"k": RELAY_LOCK})
+        assert relay_once(sessions, kafka.send) == 0  # another replica holds the relay
+    assert relay_once(sessions, kafka.send) == 1
 
 
 def test_errors_use_envelope(ctx):

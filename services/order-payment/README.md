@@ -24,6 +24,10 @@ confirmed (cancelling releases the stock). Only a verified Razorpay webhook can 
 Publishes `order.placed`, `order.status.changed` (adds `previousStatus`) and `payment.completed`, with payload
 `{orderId, retailerId, wholesalerId, status, total, currency}`.
 
+Events go through a transactional outbox (`outbox.py`): each one is written to the `outbox` table in the same
+transaction as the order change, and a relay thread sends them to Kafka in order and deletes them once acknowledged.
+An event is never lost to a Kafka outage; delivery is at least once, with a stable `eventId` that consumers de-duplicate on.
+
 ## Configuration
 
 `DB_URL`, `KAFKA_BROKERS`, `CATALOG_URL`, `INVENTORY_URL`, `PORT`. Optional `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`

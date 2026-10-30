@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, Numeric, String
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, Numeric, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -52,4 +52,16 @@ class Payment(Base):
     razorpay_payment_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status: Mapped[str] = mapped_column(String(20))  # created | captured | failed
     amount_paise: Mapped[int] = mapped_column(BigInteger)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class OutboxEvent(Base):
+    """An event written in the same transaction as the change it describes; outbox.py relays it to Kafka."""
+
+    __tablename__ = "outbox"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)  # relay order
+    topic: Mapped[str] = mapped_column(String(100))
+    key: Mapped[str] = mapped_column(String(64))
+    event: Mapped[str] = mapped_column(Text)  # the full envelope, so a resend keeps its eventId
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

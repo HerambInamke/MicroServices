@@ -19,6 +19,10 @@ source of truth for prices: order-payment asks it for a quote, so a client can n
 
 Publishes `product.created`, `product.updated`, `product.deleted`, which search and analytics consume.
 
+Events go through a transactional outbox: `EventPublisher` writes each one to the `outbox` table inside the product
+change's transaction, and `OutboxRelay` sends them to Kafka every second, in order, deleting each once acknowledged.
+An event is never lost to a Kafka outage; delivery is at least once, with a stable `eventId`.
+
 ## Configuration
 
 `DB_URL` (JDBC), `DB_USER`, `DB_PASS`, `KAFKA_BROKERS`, `PORT`.

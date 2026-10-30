@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Sort;
@@ -21,10 +22,12 @@ public class ProductService {
 
     private final ProductRepository products;
     private final CategoryRepository categories;
+    private final EventPublisher events;
 
-    public ProductService(ProductRepository products, CategoryRepository categories) {
+    public ProductService(ProductRepository products, CategoryRepository categories, EventPublisher events) {
         this.products = products;
         this.categories = categories;
+        this.events = events;
     }
 
     @Transactional(readOnly = true)
@@ -50,7 +53,9 @@ public class ProductService {
         caller.requireRole("wholesaler");
         Product p = new Product(caller.userId());
         apply(p, f);
-        return products.save(p);
+        Product saved = products.save(p);
+        events.publish("product.created", "ProductCreated", saved.getId().toString(), EventPublisher.productPayload(saved));
+        return saved;
     }
 
     @Transactional
@@ -58,7 +63,9 @@ public class ProductService {
         Product p = get(id);
         caller.requireOwner(p.getWholesalerId());
         apply(p, f);
-        return products.save(p);
+        Product saved = products.save(p);
+        events.publish("product.updated", "ProductUpdated", saved.getId().toString(), EventPublisher.productPayload(saved));
+        return saved;
     }
 
     @Transactional
@@ -66,6 +73,7 @@ public class ProductService {
         Product p = get(id);
         caller.requireOwner(p.getWholesalerId());
         products.delete(p);
+        events.publish("product.deleted", "ProductDeleted", id.toString(), Map.of("productId", id));
     }
 
     @Transactional
