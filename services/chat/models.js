@@ -32,8 +32,19 @@ const messageSchema = new mongoose.Schema({
 });
 messageSchema.index({ threadId: 1, _id: -1 });
 
+// Events written in the same transaction as the change they describe; events.js relays them to Kafka in _id order.
+const outboxSchema = new mongoose.Schema(
+  { topic: { type: String, required: true }, key: { type: String, required: true }, event: { type: String, required: true } },
+  { collection: 'outbox' },
+);
+
+// Which chat instance may relay the outbox, and until when.
+const relayLeaseSchema = new mongoose.Schema({ _id: String, owner: String, until: Date }, { collection: 'relay_leases' });
+
 const Thread = mongoose.model('Thread', threadSchema);
 const Message = mongoose.model('Message', messageSchema);
+const Outbox = mongoose.model('Outbox', outboxSchema);
+const RelayLease = mongoose.model('RelayLease', relayLeaseSchema);
 
 const isParticipant = (thread, userId) => thread.wholesalerId === userId || thread.retailerId === userId;
 const otherParty = (thread, userId) => (thread.wholesalerId === userId ? thread.retailerId : thread.wholesalerId);
@@ -52,4 +63,4 @@ function messageView(m) {
   return v;
 }
 
-module.exports = { Thread, Message, isParticipant, otherParty, threadView, messageView };
+module.exports = { Thread, Message, Outbox, RelayLease, isParticipant, otherParty, threadView, messageView };

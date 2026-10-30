@@ -32,5 +32,5 @@ from consuming `order.status.changed` (group `reviews`), upserted by order, so r
 ## Tests
 
 ```bash
-TEST_MONGO_URL="mongodb://root:rootpassword@localhost:27017/reviews_test?authSource=admin" npm test
+TEST_MONGO_URL="mongodb://root:rootpassword@localhost:27017/reviews_test?authSource=admin&directConnection=true" npm test
 ```

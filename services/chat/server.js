@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 const Redis = require('ioredis');
 const { createApp } = require('./app');
-const { kafkaPublisher, redisBroadcaster } = require('./events');
+const { outbox, kafkaSender, startRelay, redisBroadcaster } = require('./events');
 const { chatSockets } = require('./ws');
 
 const PORT = process.env.PORT || 8093;
@@ -36,7 +36,8 @@ const users = {
 mongoose
   .connect(MONGO_URL)
   .then(() => {
-    const app = createApp({ users, publisher: kafkaPublisher(KAFKA_BROKERS), broadcast: redisBroadcaster(new Redis(REDIS_URL)) });
+    startRelay(kafkaSender(KAFKA_BROKERS));
+    const app = createApp({ users, outbox, broadcast: redisBroadcaster(new Redis(REDIS_URL)) });
     const server = app.listen(PORT, () => console.log(`Chat Service listening on port ${PORT}`));
     server.on('upgrade', chatSockets(new Redis(REDIS_URL)));
   })

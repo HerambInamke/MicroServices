@@ -6,8 +6,8 @@ const mongoose = require('mongoose');
 const Redis = require('ioredis');
 const WebSocket = require('ws');
 const { createApp } = require('./app');
-const { Thread, Message } = require('./models');
-const { redisBroadcaster } = require('./events');
+const { Thread, Message, Outbox, RelayLease } = require('./models');
+const { outbox: realOutbox, redisBroadcaster, relayOnce } = require('./events');
 const { chatSockets } = require('./ws');
 
 const ROLES = { w1: 'wholesaler', w2: 'wholesaler', r1: 'retailer', r2: 'retailer' };
@@ -18,24 +18,33 @@ const users = {
     return ROLES[id] ? { id, role: ROLES[id] } : null;
   },
 };
-const events = [];
-const publisher = {
+// The real outbox writer, with a switch to make the event write fail inside the transaction.
+const outbox = {
   fail: false,
-  async publish(topic, type, key, payload) {
-    if (this.fail) throw new Error('publish failed');
-    events.push({ topic, type, key, payload });
+  async add(session, ...args) {
+    if (this.fail) throw new Error('outbox write failed');
+    return realOutbox.add(session, ...args);
   },
 };
+
+// Committed outbox events, oldest first, as {topic, type, key, payload, eventId}.
+async function outboxEvents() {
+  const rows = await Outbox.find().sort({ _id: 1 });
+  return rows.map((r) => {
+    const e = JSON.parse(r.event);
+    return { topic: r.topic, type: e.eventType, key: r.key, payload: e.payload, eventId: e.eventId };
+  });
+}
 
 let server, base, redisPub, redisSub;
 
 before(async () => {
   await mongoose.connect(process.env.TEST_MONGO_URL);
   await mongoose.connection.dropDatabase();
-  await Promise.all([Thread.syncIndexes(), Message.syncIndexes()]);
+  await Promise.all([Thread.syncIndexes(), Message.syncIndexes(), Outbox.createCollection(), RelayLease.createCollection()]);
   redisPub = new Redis(process.env.TEST_REDIS_URL);
   redisSub = new Redis(process.env.TEST_REDIS_URL);
-  server = http.createServer(createApp({ users, publisher, broadcast: redisBroadcaster(redisPub) }));
+  server = http.createServer(createApp({ users, outbox, broadcast: redisBroadcaster(redisPub) }));
   server.on('upgrade', chatSockets(redisSub));
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   base = `127.0.0.1:${server.address().port}`;
@@ -85,11 +94,12 @@ test('threads are idempotent per pair and need one wholesaler and one retailer',
 
 test('messages: send publishes one event, only participants read, paging works', async () => {
   const id = await thread('r1', 'w1');
-  events.length = 0;
+  await Outbox.deleteMany({});
 
   let r = await call('POST', `/chat/threads/${id}/messages`, 'r1', { text: '  hello  ' });
   assert.equal(r.status, 201);
   assert.equal(r.body.data.text, 'hello');
+  const events = await outboxEvents();
   assert.equal(events.length, 1);
   assert.equal(events[0].topic, 'chat.message.sent');
   assert.deepEqual(events[0].payload, { threadId: id, messageId: r.body.data.id, senderId: 'r1', recipientId: 'w1', kind: 'text' });
@@ -117,7 +127,7 @@ test('messages: send publishes one event, only participants read, paging works',
 
 test('offers: only the other party responds, once; counters chain', async () => {
   const id = await thread('r2', 'w2');
-  events.length = 0;
+  await Outbox.deleteMany({});
   const base = `/chat/threads/${id}/offers`;
 
   for (const bad of [{ qty: 0, unitPrice: 10 }, { qty: 1.5, unitPrice: 10 }, { qty: 2, unitPrice: 10.123 }, { qty: 2, unitPrice: -1 }, { qty: 2 }]) {
@@ -152,6 +162,7 @@ test('offers: only the other party responds, once; counters chain', async () => 
   const msgs = (await call('GET', `/chat/threads/${id}/messages`, 'r2')).body.data;
   assert.deepEqual(msgs.map((m) => m.offer.status), ['accepted', 'countered']);
   // offer → w2, counter → r2, accept → the counter's sender (w2) via chat.offer.updated
+  const events = await outboxEvents();
   assert.deepEqual(events.map((e) => [e.topic, e.payload.recipientId]), [['chat.message.sent', 'w2'], ['chat.message.sent', 'r2'], ['chat.offer.updated', 'w2']]);
   assert.equal(events[2].payload.status, 'accepted');
 });
@@ -159,11 +170,62 @@ test('offers: only the other party responds, once; counters chain', async () => 
 test('a counter that fails to post leaves the original offer open', async () => {
   const id = await thread('r1', 'w1');
   const offer = (await call('POST', `/chat/threads/${id}/offers`, 'r1', { productId: 'p9', qty: 1, unitPrice: 10 })).body.data;
-  publisher.fail = true;
+  const before = (await outboxEvents()).length;
+  const messages = await Message.countDocuments({ threadId: id });
+  outbox.fail = true;
   const r = await call('POST', `/chat/threads/${id}/offers/${offer.id}/respond`, 'w1', { action: 'counter', qty: 1, unitPrice: 12 });
-  publisher.fail = false;
+  outbox.fail = false;
   assert.equal(r.status, 500);
+  // The whole response rolled back: no counter message, no event, original still open.
+  assert.equal(await Message.countDocuments({ threadId: id }), messages);
+  assert.equal((await outboxEvents()).length, before);
   assert.equal((await call('POST', `/chat/threads/${id}/offers/${offer.id}/respond`, 'w1', { action: 'accept' })).status, 200);
+});
+
+test('a message whose event cannot be written is not saved', async () => {
+  const id = await thread('r2', 'w1');
+  outbox.fail = true;
+  const r = await call('POST', `/chat/threads/${id}/messages`, 'r2', { text: 'lost?' });
+  outbox.fail = false;
+  assert.equal(r.status, 500);
+  assert.equal(await Message.countDocuments({ threadId: id }), 0);
+});
+
+test('relay: keeps events while Kafka is down, then sends them in order once', async () => {
+  await Outbox.deleteMany({});
+  await RelayLease.deleteMany({});
+  const id = await thread('r1', 'w2');
+  for (const text of ['one', 'two']) await call('POST', `/chat/threads/${id}/messages`, 'r1', { text });
+  const written = await outboxEvents();
+
+  const down = async () => {
+    throw new Error('kafka unavailable');
+  };
+  assert.equal(await relayOnce(down), 0);
+  assert.equal((await outboxEvents()).length, 2);
+
+  const tried = [];
+  const firstFails = async (topic, key, value) => {
+    tried.push(JSON.parse(value).eventId);
+    if (tried.length === 1) throw new Error('timeout');
+  };
+  assert.equal(await relayOnce(firstFails), 0);
+  assert.deepEqual(tried, [written[0].eventId]); // the second never overtakes the first
+
+  const sent = [];
+  assert.equal(await relayOnce(async (topic, key, value) => sent.push({ topic, key, eventId: JSON.parse(value).eventId })), 2);
+  assert.deepEqual(sent, written.map((e) => ({ topic: 'chat.message.sent', key: id, eventId: e.eventId })));
+  assert.equal((await outboxEvents()).length, 0);
+});
+
+test('relay: only the lease holder sends', async () => {
+  await Outbox.deleteMany({});
+  const id = await thread('r2', 'w2');
+  await call('POST', `/chat/threads/${id}/messages`, 'r2', { text: 'hi' });
+  await RelayLease.updateOne({ _id: 'outbox' }, { $set: { owner: 'another-instance', until: new Date(Date.now() + 60_000) } }, { upsert: true });
+  assert.equal(await relayOnce(async () => {}), 0);
+  await RelayLease.updateOne({ _id: 'outbox' }, { $set: { until: new Date(Date.now() - 1) } }); // that lease expired
+  assert.equal(await relayOnce(async () => {}), 1);
 });
 
 function connect(threadId, user) {
