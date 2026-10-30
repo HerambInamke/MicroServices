@@ -1,6 +1,7 @@
 # Pending work: Provenance (MicroServices)
 
-Snapshot: 2026-10-30. D1 (#28), D3 (#29), D6 (#30), D2 for the Postgres services (#31) and B1 done on 2026-10-30. Phases 1–5 are built and merged.
+Snapshot: 2026-10-30. Done on 2026-10-30: D1 (#28), D3 (#29), D6 (#30), D2 outbox everywhere (#31 order-payment + catalog, #33 ledger,
+#34 chat, which runs MongoDB as a single-node replica set), and B1. Phases 1–5 are built and merged.
 Phase 6 (OSS polish) is mostly done. Smoke test Phases 1–5 and CI (17 jobs) are green.
 
 To resume: open this file and pick a section. Items are grouped by **what blocks them**.
@@ -66,7 +67,6 @@ Never-ticked "Human review" boxes, for you to look over and tick:
 
 | # | Item | Where | Risk if left |
 |---|---|---|---|
-| D2 | **No outbox for ledger and chat events.** order-payment and catalog have a transactional outbox now; the ledger (immudb) and chat (standalone Mongo) still publish after the write, so an event is lost if Kafka is down at that moment. Spec #23, tickets #24 (ledger) and #25 (chat: needs a replica-set decision). | ledger `events.go`, chat `events.js` | Medium in production |
 | D4 | **Ledger handoff lock is in process.** It is correct only with one ledger replica; use an immudb precondition before scaling out. | `services/provenance-ledger/handlers.go` | Low (single instance) |
 | D5 | **No schema migrations** for order-payment (create_all) and media-upload (IF NOT EXISTS). Adopt Alembic / a migration tool at the first schema change. | `order-payment/app.py`, `media-upload/store.go` | Low now |
 | D7 | **Analytics:** if the catalog is unreachable during ingest, the line is filed under category 0 for good. Add a backfill job (#26). | `services/analytics/ingest.py` | Low |
