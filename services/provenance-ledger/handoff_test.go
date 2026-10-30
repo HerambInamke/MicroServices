@@ -30,7 +30,6 @@ func personalSign(t *testing.T, key *ecdsa.PrivateKey, dataHashHex string) strin
 type handoffFixture struct {
 	s       *Server
 	st      *fakeStore
-	pub     *fakePublisher
 	chain   *fakeChain
 	pieceID string
 	dyeKey  *ecdsa.PrivateKey
@@ -39,7 +38,7 @@ type handoffFixture struct {
 // newHandoffFixture registers a piece by weaver w1; d1 is a dye-house with a linked wallet.
 func newHandoffFixture(t *testing.T) *handoffFixture {
 	t.Helper()
-	s, st, pub := newTestServer()
+	s, st := newTestServer()
 	key, _ := crypto.GenerateKey()
 	s.users = fakeUsers{
 		"w1": {ID: "w1", Role: "weaver"},
@@ -49,7 +48,7 @@ func newHandoffFixture(t *testing.T) *handoffFixture {
 		"r9": {ID: "r9", Role: "retailer"},
 	}
 	_, env := do(t, s, "POST", "/pieces", "w1", "weaver", `{}`)
-	return &handoffFixture{s: s, st: st, pub: pub, chain: s.chain.(*fakeChain), pieceID: env["data"].(map[string]any)["id"].(string), dyeKey: key}
+	return &handoffFixture{s: s, st: st, chain: s.chain.(*fakeChain), pieceID: env["data"].(map[string]any)["id"].(string), dyeKey: key}
 }
 
 func (f *handoffFixture) offer(t *testing.T, to string) string {
@@ -80,8 +79,8 @@ func TestHandoffOfferThenSignedAccept(t *testing.T) {
 	if !common.IsHexAddress(f.st.events[f.pieceID][1].ActorAddress) {
 		t.Fatalf("actor address missing: %+v", f.st.events[f.pieceID][1])
 	}
-	if last := f.pub.sent[len(f.pub.sent)-1]; last != (published{"piece.handoff.signed", "PieceHandoffSigned", f.pieceID}) {
-		t.Fatalf("unexpected event: %v", last)
+	if sent := f.st.published(); len(sent) != 2 || sent[1] != (published{"piece.handoff.signed", "PieceHandoffSigned", f.pieceID}) {
+		t.Fatalf("unexpected events: %v", sent)
 	}
 
 	// The offer is consumed: the same signature cannot be replayed.

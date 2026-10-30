@@ -24,6 +24,10 @@ hash on-chain through a relayer account. Records are idempotent, so a retry neve
 
 Publishes `piece.registered` and `piece.handoff.signed` (`pieceId, fromUserId, toUserId, role, ...`).
 
+Events go through an outbox in immudb: each one is written as `outbox:{pieceId}:{index}` in the same `SetAll` as
+the history entry it describes, and a relay goroutine sends them to Kafka (per piece in history order) and logically
+deletes each once acknowledged. An event is never lost to a Kafka outage; delivery is at least once with a stable `eventId`.
+
 ## Configuration
 
 `IMMUDB_HOST`, `IMMUDB_USER`, `IMMUDB_PASSWORD`, `IMMUDB_DB`, `CHAIN_RPC_URL`, `RELAYER_KEY`, `CONTRACT_ADDRESS`,

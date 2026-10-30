@@ -48,18 +48,32 @@ type Event struct {
 	Timestamp    time.Time `json:"timestamp"`
 }
 
-type Store interface {
-	Create(ctx context.Context, p Piece, first Event) error
-	Get(ctx context.Context, id string) (Piece, error)
-	// Update replaces the piece state and, when e is set, appends that history entry in the same transaction.
-	Update(ctx context.Context, p Piece, e *Event) error
-	History(ctx context.Context, id string) ([]Event, error)
+// Pending is an outbox entry and the key it is stored under.
+type Pending struct {
+	StoreKey []byte
+	Outgoing
 }
 
-// immudb keys: piece:{id} holds the current piece state, piece:{id}:event:{n} each history entry.
+type Store interface {
+	// Create stores a new piece, its first history entry and that entry's event, in one transaction.
+	Create(ctx context.Context, p Piece, first Event, out Outgoing) error
+	Get(ctx context.Context, id string) (Piece, error)
+	// Update replaces the piece state and, when e is set, appends that history entry and its event (out, required
+	// with e) in the same transaction.
+	Update(ctx context.Context, p Piece, e *Event, out *Outgoing) error
+	History(ctx context.Context, id string) ([]Event, error)
+	// Pending lists unsent events, each piece's in history order. Sent removes one after Kafka acknowledged it.
+	Pending(ctx context.Context, limit int) ([]Pending, error)
+	Sent(ctx context.Context, storeKey []byte) error
+}
+
+// immudb keys: piece:{id} holds the current piece state, piece:{id}:event:{n} each history entry, and
+// outbox:{id}:{n} the Kafka event for entry n until the relay has sent it.
 func pieceKey(id string) []byte { return []byte("piece:" + id) }
 
 func eventKey(id string, n int) []byte { return []byte(fmt.Sprintf("piece:%s:event:%06d", id, n)) }
+
+func outboxKey(id string, n int) []byte { return []byte(fmt.Sprintf("outbox:%s:%06d", id, n)) }
 
 type immuStore struct{ c immu.ImmuClient }
 
@@ -72,7 +86,7 @@ func newImmuStore(ctx context.Context, host, user, pass, db string) (*immuStore,
 	return &immuStore{c: c}, nil
 }
 
-func (s *immuStore) Create(ctx context.Context, p Piece, first Event) error {
+func (s *immuStore) Create(ctx context.Context, p Piece, first Event, out Outgoing) error {
 	pb, err := json.Marshal(p)
 	if err != nil {
 		return err
@@ -81,15 +95,21 @@ func (s *immuStore) Create(ctx context.Context, p Piece, first Event) error {
 	if err != nil {
 		return err
 	}
-	// One immudb transaction, so a piece never exists without its registration entry.
+	ob, err := json.Marshal(out)
+	if err != nil {
+		return err
+	}
+	// One immudb transaction, so a piece never exists without its registration entry and its event.
 	_, err = s.c.SetAll(ctx, &schema.SetRequest{
-		KVs:           []*schema.KeyValue{{Key: pieceKey(p.ID), Value: pb}, {Key: eventKey(p.ID, first.Index), Value: eb}},
+		KVs: []*schema.KeyValue{
+			{Key: pieceKey(p.ID), Value: pb}, {Key: eventKey(p.ID, first.Index), Value: eb}, {Key: outboxKey(p.ID, first.Index), Value: ob},
+		},
 		Preconditions: []*schema.Precondition{schema.PreconditionKeyMustNotExist(pieceKey(p.ID))},
 	})
 	return err
 }
 
-func (s *immuStore) Update(ctx context.Context, p Piece, e *Event) error {
+func (s *immuStore) Update(ctx context.Context, p Piece, e *Event, out *Outgoing) error {
 	pb, err := json.Marshal(p)
 	if err != nil {
 		return err
@@ -103,11 +123,38 @@ func (s *immuStore) Update(ctx context.Context, p Piece, e *Event) error {
 		if err != nil {
 			return err
 		}
+		ob, err := json.Marshal(out)
+		if err != nil {
+			return err
+		}
 		// History is append-only: an entry index is written once and never overwritten.
-		req.KVs = append(req.KVs, &schema.KeyValue{Key: eventKey(p.ID, e.Index), Value: eb})
+		req.KVs = append(req.KVs, &schema.KeyValue{Key: eventKey(p.ID, e.Index), Value: eb}, &schema.KeyValue{Key: outboxKey(p.ID, e.Index), Value: ob})
 		req.Preconditions = append(req.Preconditions, schema.PreconditionKeyMustNotExist(eventKey(p.ID, e.Index)))
 	}
 	_, err = s.c.SetAll(ctx, req)
+	return err
+}
+
+func (s *immuStore) Pending(ctx context.Context, limit int) ([]Pending, error) {
+	// Sent entries are deleted, and immudb scans skip deleted keys. Key order is per-piece history order.
+	list, err := s.c.Scan(ctx, &schema.ScanRequest{Prefix: []byte("outbox:"), Limit: uint64(limit)})
+	if err != nil {
+		return nil, err
+	}
+	pending := make([]Pending, 0, len(list.Entries))
+	for _, entry := range list.Entries {
+		var o Outgoing
+		if err := json.Unmarshal(entry.Value, &o); err != nil {
+			return nil, err
+		}
+		pending = append(pending, Pending{StoreKey: entry.Key, Outgoing: o})
+	}
+	return pending, nil
+}
+
+func (s *immuStore) Sent(ctx context.Context, storeKey []byte) error {
+	// A logical delete: the entry stays in immudb's verifiable history, but scans no longer return it.
+	_, err := s.c.Delete(ctx, &schema.DeleteKeysRequest{Keys: [][]byte{storeKey}})
 	return err
 }
 
