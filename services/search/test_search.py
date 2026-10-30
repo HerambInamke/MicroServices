@@ -107,6 +107,16 @@ def test_consumer_handles_product_events():
     assert index.docs == {}
 
 
+def test_consumer_handles_design_events():
+    index = FakeIndex()
+    payload = {"designId": "d9", "productId": 7, "productName": "Banarasi", "wholesalerId": "w1"}
+    consumer.handle(index, {"eventType": "DesignRegistered", "payload": payload})
+    assert index.docs[("design", "d9")] == {"type": "design", "id": "d9", "name": "Banarasi", "description": "",
+                                           "wholesalerId": "w1", "productId": 7}
+    consumer.handle(index, {"eventType": "DesignDeleted", "payload": {"designId": "d9"}})
+    assert index.docs == {}
+
+
 @pytest.mark.skipif(not os.getenv("TEST_ES_URL"), reason="TEST_ES_URL not set")
 def test_real_index_fuzzy_search_and_suggest():
     from elasticsearch import Elasticsearch

@@ -2,8 +2,8 @@
 
 Python/FastAPI · port **8089** · Elasticsearch.
 
-Full-text search over products, wholesalers and designs. Products stay in sync through catalog events; an admin
-reindex rebuilds everything from the source services.
+Full-text search over products, wholesalers and designs. Products and designs stay in sync through events;
+wholesalers appear on the next admin reindex, which rebuilds everything from the source services.
 
 ## Endpoints
 
@@ -15,7 +15,8 @@ reindex rebuilds everything from the source services.
 
 ## Events
 
-Consumes `product.created`, `product.updated` and `product.deleted` (group `search`).
+Consumes `product.created`, `product.updated`, `product.deleted` (catalog) and `design.changed`
+(counterfeit-detection), group `search`.
 
 ## Configuration
 

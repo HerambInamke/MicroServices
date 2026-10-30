@@ -1,21 +1,27 @@
-"""Keeps the index in step with the catalog's product.* events."""
+"""Keeps the index in step with the catalog's product.* and counterfeit-detection's design.changed events."""
 
 import json
 import logging
 
-from index import product_doc
+from index import design_doc, product_doc
 
 log = logging.getLogger("search")
 
-TOPICS = ["product.created", "product.updated", "product.deleted"]
+TOPICS = ["product.created", "product.updated", "product.deleted", "design.changed"]
 
 
 def handle(index, event: dict) -> None:
     p = event["payload"]
-    if event["eventType"] == "ProductDeleted":
-        index.delete("product", p["productId"])
-    else:
-        index.upsert(product_doc(p))
+    match event["eventType"]:
+        case "ProductDeleted":
+            index.delete("product", p["productId"])
+        case "DesignRegistered":
+            design = {"id": p["designId"], "productId": p["productId"], "wholesalerId": p["wholesalerId"]}
+            index.upsert(design_doc(design, {p["productId"]: p["productName"]}))
+        case "DesignDeleted":
+            index.delete("design", p["designId"])
+        case _:
+            index.upsert(product_doc(p))
 
 
 def run(index, brokers: str) -> None:

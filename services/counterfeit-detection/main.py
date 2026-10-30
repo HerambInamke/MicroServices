@@ -6,7 +6,7 @@ import time
 import uvicorn
 
 from app import DEFAULT_MATCH_THRESHOLD, create_app
-from clients import CatalogClient, MediaClient
+from clients import CatalogClient, KafkaPublisher, MediaClient
 from embedder import ClipEmbedder
 from store import WeaviateStore
 
@@ -40,7 +40,8 @@ def build_app():
     store = connect(require_env("WEAVIATE_URL"))
     threshold = float(os.getenv("MATCH_THRESHOLD") or DEFAULT_MATCH_THRESHOLD)
     catalog, media = CatalogClient(require_env("CATALOG_URL")), MediaClient(require_env("MEDIA_URL"))
-    return create_app(store, ClipEmbedder(), catalog, media, threshold)
+    publisher = KafkaPublisher(require_env("KAFKA_BROKERS"))
+    return create_app(store, ClipEmbedder(), catalog, media, publisher, threshold)
 
 
 if __name__ == "__main__":

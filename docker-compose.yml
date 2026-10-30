@@ -305,12 +305,14 @@ services:
       - WEAVIATE_URL=http://weaviate:8080
       - CATALOG_URL=http://wholesale-catalog:8083
       - MEDIA_URL=http://media-upload:8085
+      - KAFKA_BROKERS=kafka:9092
       # Empty uses the calibrated default in app.py.
       - MATCH_THRESHOLD=${MATCH_THRESHOLD:-}
     depends_on:
       - weaviate
       - wholesale-catalog
       - media-upload
+      - kafka
 
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3

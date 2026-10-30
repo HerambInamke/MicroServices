@@ -71,12 +71,20 @@ class FakeCatalog:
     products = {1: "w1", 2: "w2", 3: "w1"}
     down = False
 
-    def product_owner(self, product_id):
+    def product(self, product_id):
         if self.down:
             raise UpstreamError(502, "CATALOG_UNAVAILABLE", "could not reach the catalog")
         if product_id not in self.products:
             raise UpstreamError(404, "PRODUCT_NOT_FOUND", "not found")
-        return self.products[product_id]
+        return {"id": product_id, "wholesalerId": self.products[product_id], "name": f"Saree {product_id}"}
+
+
+class FakePublisher:
+    def __init__(self):
+        self.events = []
+
+    def publish(self, topic, event_type, key, payload):
+        self.events.append((topic, event_type, key, payload))
 
 
 class FakeMedia:
@@ -99,9 +107,9 @@ class FakeMedia:
 
 @pytest.fixture
 def ctx():
-    store, catalog, media = FakeStore(), FakeCatalog(), FakeMedia()
-    client = TestClient(create_app(store, FakeEmbedder(), catalog, media, THRESHOLD))
-    return client, store, catalog, media
+    store, catalog, media, events = FakeStore(), FakeCatalog(), FakeMedia(), FakePublisher()
+    client = TestClient(create_app(store, FakeEmbedder(), catalog, media, events, THRESHOLD))
+    return client, store, catalog, media, events
 
 
 def as_user(uid, role):
@@ -116,13 +124,16 @@ def register(client, headers, product_id, media_id):
 
 
 def test_register_and_get(ctx):
-    client, _, _, media = ctx
+    client, _, _, media, events = ctx
     mid = media.add("w1", "red")
     res = register(client, W1, 1, mid)
     assert res.status_code == 201, res.json()
     d = res.json()["data"]
     assert (d["productId"], d["wholesalerId"], d["mediaId"]) == (1, "w1", mid)
     assert d["referenceImageUrl"] == f"/api/v1/media/{mid}/content"
+    # Search indexes the design under its product's name.
+    assert events.events == [("design.changed", "DesignRegistered", d["id"],
+                              {"designId": d["id"], "productId": 1, "productName": "Saree 1", "wholesalerId": "w1"})]
 
     got = client.get(f"/designs/{d['id']}")
     assert got.status_code == 200
@@ -130,16 +141,18 @@ def test_register_and_get(ctx):
 
 
 def test_delete_owner_or_admin_only(ctx):
-    client, _, _, media = ctx
+    client, _, _, media, events = ctx
     d = register(client, W1, 1, media.add("w1", "red")).json()["data"]
     assert client.delete(f"/designs/{d['id']}").status_code == 401
     assert client.delete(f"/designs/{d['id']}", headers=W2).status_code == 403
     assert client.delete(f"/designs/{uuid.uuid4()}", headers=W1).status_code == 404
     assert client.delete("/designs/not-a-uuid", headers=W1).status_code == 404
+    assert [e[1] for e in events.events] == ["DesignRegistered"]  # refusals publish nothing
 
     res = client.delete(f"/designs/{d['id']}", headers=W1)
     assert res.status_code == 200
     assert res.json()["data"] == {"id": d["id"], "deleted": True}
+    assert events.events[-1] == ("design.changed", "DesignDeleted", d["id"], {"designId": d["id"]})
     assert client.get(f"/designs/{d['id']}").status_code == 404
     # The same image can now be registered by someone else.
     assert register(client, W2, 2, media.add("w2", "red")).status_code == 201
@@ -166,14 +179,14 @@ def test_get_unknown_and_malformed_ids_are_404(ctx):
     ],
 )
 def test_register_refusals(ctx, headers, product_id, owner, kind, status, code):
-    client, store, _, media = ctx
+    client, store, _, media, _ = ctx
     res = register(client, headers, product_id, media.add(owner, "red", kind))
     assert (res.status_code, res.json()["error"]["code"]) == (status, code)
     assert store.rows == {}
 
 
 def test_register_unknown_media_and_catalog_down(ctx):
-    client, _, catalog, media = ctx
+    client, _, catalog, media, _ = ctx
     assert register(client, W1, 1, str(uuid.uuid4())).json()["error"]["code"] == "MEDIA_NOT_FOUND"
     assert register(client, W1, 1, "../../health").status_code == 400  # never reaches the media URL
     catalog.down = True
@@ -182,7 +195,7 @@ def test_register_unknown_media_and_catalog_down(ctx):
 
 
 def test_conflict_with_another_wholesaler_but_not_with_yourself(ctx):
-    client, _, _, media = ctx
+    client, _, _, media, _ = ctx
     assert register(client, W1, 1, media.add("w1", "red")).status_code == 201
     assert register(client, W1, 3, media.add("w1", "red-crop")).status_code == 201  # own duplicate is fine
 
@@ -192,7 +205,7 @@ def test_conflict_with_another_wholesaler_but_not_with_yourself(ctx):
 
 
 def test_list_designs_pages(ctx):
-    client, _, _, media = ctx
+    client, _, _, media, _ = ctx
     for tag in ("red", "blue", "green"):
         register(client, W1 if tag != "blue" else W2, 1 if tag != "blue" else 2, media.add("w1" if tag != "blue" else "w2", tag))
     body = client.get("/designs", params={"limit": 2}).json()
@@ -201,7 +214,7 @@ def test_list_designs_pages(ctx):
 
 
 def test_undecodable_reference_is_422(ctx):
-    client, _, _, media = ctx
+    client, _, _, media, _ = ctx
     res = register(client, W1, 1, media.add("w1", "garbage"))
     assert (res.status_code, res.json()["error"]["code"]) == (422, "INVALID_IMAGE")
 
@@ -211,7 +224,7 @@ def match(client, headers, data, **form):
 
 
 def test_match_orders_results_and_sets_flag(ctx):
-    client, _, _, media = ctx
+    client, _, _, media, _ = ctx
     red = register(client, W1, 1, media.add("w1", "red")).json()["data"]
     blue = register(client, W2, 2, media.add("w2", "blue")).json()["data"]
     green = register(client, W1, 3, media.add("w1", "green")).json()["data"]
