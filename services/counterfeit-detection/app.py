@@ -58,7 +58,8 @@ class RegisterDesign(BaseModel):
 
 
 def create_app(store, embedder, catalog, media, publisher, threshold: float = DEFAULT_MATCH_THRESHOLD) -> FastAPI:
-    """publisher.publish(topic, event_type, key, payload) keeps Search's design entries in step."""
+    """publisher.publish(topic, event_type, key, payload) keeps Search's design entries in step. Registered and
+    deleted share the design.changed topic, keyed by design id, so Kafka keeps them in order."""
     app = FastAPI(title="counterfeit-detection")
 
     @app.exception_handler(ApiError)
@@ -117,7 +118,7 @@ def create_app(store, embedder, catalog, media, publisher, threshold: float = DE
             {"productId": req.productId, "wholesalerId": who.id, "mediaId": media_id, "referenceImageUrl": meta["url"]},
             vector,
         )
-        publisher.publish("design.registered", "DesignRegistered", design["id"], {
+        publisher.publish("design.changed", "DesignRegistered", design["id"], {
             "designId": design["id"], "productId": req.productId, "productName": product["name"], "wholesalerId": who.id,
         })
         return ok(design, 201)
@@ -162,7 +163,7 @@ def create_app(store, embedder, catalog, media, publisher, threshold: float = DE
         if who.role != "admin" and design["wholesalerId"] != who.id:
             raise ApiError(403, "FORBIDDEN", "you can only delete your own designs")
         store.delete(design_id)
-        publisher.publish("design.deleted", "DesignDeleted", design_id, {"designId": design_id})
+        publisher.publish("design.changed", "DesignDeleted", design_id, {"designId": design_id})
         return ok({"id": design_id, "deleted": True})
 
     return app

@@ -132,7 +132,7 @@ def test_register_and_get(ctx):
     assert (d["productId"], d["wholesalerId"], d["mediaId"]) == (1, "w1", mid)
     assert d["referenceImageUrl"] == f"/api/v1/media/{mid}/content"
     # Search indexes the design under its product's name.
-    assert events.events == [("design.registered", "DesignRegistered", d["id"],
+    assert events.events == [("design.changed", "DesignRegistered", d["id"],
                               {"designId": d["id"], "productId": 1, "productName": "Saree 1", "wholesalerId": "w1"})]
 
     got = client.get(f"/designs/{d['id']}")
@@ -147,12 +147,12 @@ def test_delete_owner_or_admin_only(ctx):
     assert client.delete(f"/designs/{d['id']}", headers=W2).status_code == 403
     assert client.delete(f"/designs/{uuid.uuid4()}", headers=W1).status_code == 404
     assert client.delete("/designs/not-a-uuid", headers=W1).status_code == 404
-    assert [e[0] for e in events.events] == ["design.registered"]  # refusals publish nothing
+    assert [e[1] for e in events.events] == ["DesignRegistered"]  # refusals publish nothing
 
     res = client.delete(f"/designs/{d['id']}", headers=W1)
     assert res.status_code == 200
     assert res.json()["data"] == {"id": d["id"], "deleted": True}
-    assert events.events[-1] == ("design.deleted", "DesignDeleted", d["id"], {"designId": d["id"]})
+    assert events.events[-1] == ("design.changed", "DesignDeleted", d["id"], {"designId": d["id"]})
     assert client.get(f"/designs/{d['id']}").status_code == 404
     # The same image can now be registered by someone else.
     assert register(client, W2, 2, media.add("w2", "red")).status_code == 201

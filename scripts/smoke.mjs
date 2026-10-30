@@ -299,7 +299,7 @@ step(`new product searchable via product.created (${paithaniName})`);
 
 const designSearch = () => api('GET', `/search?q=${encodeURIComponent('Kanjeevaram')}&type=design`);
 await eventually('design in search', async () => (await designSearch()).data?.some((d) => d.id === design.data.id));
-step('registered design searchable via design.registered (no reindex)');
+step('registered design searchable via design.changed (no reindex)');
 
 assert.equal((await api('POST', '/search/reindex', { token: wholesaler.token })).status, 403);
 const reindex = await api('POST', '/search/reindex', { token: adminToken });
@@ -407,6 +407,6 @@ const removed = await api('DELETE', `/designs/${design.data.id}`, { token: whole
 assert.equal(removed.status, 200, JSON.stringify(removed));
 assert.equal((await api('GET', `/designs/${design.data.id}`)).status, 404);
 await eventually('design gone from search', async () => !(await designSearch()).data?.some((d) => d.id === design.data.id));
-step('only the owner can delete the design; deleted (and gone from search via design.deleted) so the smoke can run again');
+step('only the owner can delete the design; deleted (and gone from search via design.changed) so the smoke can run again');
 
 console.log('\nAll Phase 5 smoke checks passed.');

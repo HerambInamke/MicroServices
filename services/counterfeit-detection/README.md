@@ -16,8 +16,9 @@ wholesaler cannot register a design that matches one already registered.
 
 ## Events
 
-Publishes `design.registered` `{designId, productId, productName, wholesalerId}` and `design.deleted`
-`{designId}`, so Search lists designs as they change (an admin reindex still rebuilds everything).
+Publishes `DesignRegistered` `{designId, productId, productName, wholesalerId}` and `DesignDeleted` `{designId}`, both
+on the `design.changed` topic keyed by design id (one topic keeps them in order), so Search lists designs as they
+change. An admin reindex still rebuilds everything.
 
 ## Configuration
 
