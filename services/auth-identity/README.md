@@ -14,7 +14,12 @@ Postgres and revoked when used (rotation) or on logout. An admin is seeded from 
 | `POST /auth/login` → `{accessToken, refreshToken}` | public |
 | `POST /auth/refresh`, `POST /auth/logout` | public / caller |
 | `GET /auth/me` | caller |
-| `POST /auth/wallet/link` `{address}`, `DELETE /auth/wallet/unlink` | caller (the ledger checks handoff signatures against this wallet) |
+| `POST /auth/wallet/challenge` `{address}` → `{message, expiresAt}` | caller |
+| `POST /auth/wallet/link` `{address, message, signature}`, `DELETE /auth/wallet/unlink` | caller (the ledger checks handoff signatures against this wallet) |
+
+Linking proves ownership: the wallet must `personal_sign` the challenge message (valid 5 minutes, bound to the
+caller and the address by an HMAC from `JWT_SECRET`). Nothing is stored for a challenge; reusing one before it
+expires only re-links the same wallet to the same user.
 | `GET /users/:id` → `{id, role, walletAddress}` | any logged-in user; used by other services, no email or phone |
 | `PATCH /users/:id/role` | admin |
 
