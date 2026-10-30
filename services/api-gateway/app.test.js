@@ -178,6 +178,61 @@ test('rate limit returns 429', async () => {
   assert.deepEqual(codes, [404, 404, 429]);
 });
 
+// Statuses for n requests spread round-robin over gateways built from the given options.
+async function hitAll(optsList, n) {
+  const servers = optsList.map((o) => http.createServer(createApp({ services: { auth: upstreamURL }, secret: SECRET, ...o })));
+  const ports = await Promise.all(servers.map(listen));
+  const codes = [];
+  for (let i = 0; i < n; i++) codes.push((await fetch(`http://127.0.0.1:${ports[i % ports.length]}/api/v1/products`)).status);
+  servers.forEach((s) => s.close());
+  return codes;
+}
+
+test('gateways sharing a counter share one limit', async () => {
+  const counts = new Map();
+  const shared = async (ip) => counts.set(ip, (counts.get(ip) || 0) + 1).get(ip);
+  const opts = { rateLimitPerMinute: 2, countHits: shared };
+  assert.deepEqual(await hitAll([opts, opts], 3), [404, 404, 429]);
+});
+
+test('rate limiter fails open when its store is down', async () => {
+  const down = async () => {
+    throw new Error('connection refused');
+  };
+  assert.deepEqual(await hitAll([{ rateLimitPerMinute: 1, countHits: down }], 2), [404, 404]);
+});
+
+test('websocket upgrade is rate limited', async () => {
+  const app = createApp({ services: { chat: upstreamURL }, secret: SECRET, rateLimitPerMinute: 0 });
+  const server = http.createServer(app);
+  server.on('upgrade', app.upgrade);
+  const port = await listen(server);
+  const status = await new Promise((resolve, reject) => {
+    const req = http.request(`http://127.0.0.1:${port}/api/v1/ws/chat/t1`, { headers: { connection: 'Upgrade', upgrade: 'websocket' } });
+    req.on('response', (res) => resolve(res.statusCode));
+    req.on('error', reject);
+    req.end();
+  });
+  server.close();
+  assert.equal(status, 429);
+});
+
+test('redis counter shares one window across gateways', { skip: !process.env.TEST_REDIS_URL && 'TEST_REDIS_URL not set' }, async () => {
+  const Redis = require('ioredis');
+  const { redisCounter } = require('./app');
+  const clients = [new Redis(process.env.TEST_REDIS_URL), new Redis(process.env.TEST_REDIS_URL)];
+  const stale = await clients[0].keys('ratelimit:*');
+  if (stale.length) await clients[0].del(...stale);
+  try {
+    assert.deepEqual(await hitAll(clients.map((c) => ({ rateLimitPerMinute: 2, countHits: redisCounter(c) })), 3), [404, 404, 429]);
+    const [key] = await clients[0].keys('ratelimit:*');
+    const ttl = await clients[0].ttl(key);
+    assert.ok(ttl > 0 && ttl <= 60, `ttl ${ttl}`);
+  } finally {
+    clients.forEach((c) => c.disconnect());
+  }
+});
+
 // Opens a WebSocket-style upgrade through the gateway. Resolves {status} on refusal or {socket, first} on success.
 function upgrade(path, headers = {}) {
   return new Promise((resolve, reject) => {

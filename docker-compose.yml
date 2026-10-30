@@ -131,6 +131,7 @@ services:
     environment:
       - PORT=3000
       - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-300}
+      - REDIS_URL=redis://redis:6379/3
       - JWT_SECRET=${JWT_SECRET:-dev-only-change-me}
       - AUTH_URL=http://auth-identity:8081
       - PROFILE_URL=http://business-profile:8082
@@ -161,6 +162,7 @@ services:
       - notifications
       - chat
       - reviews
+      - redis
 
   auth-identity:
     <<: *app

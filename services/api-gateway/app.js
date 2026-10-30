@@ -77,19 +77,40 @@ function identityFrom(header, secret) {
   return { sub: claims.sub, role: claims.role || '' };
 }
 
-// shortcut: in-memory fixed window per IP, so limits are per gateway instance; move to Redis when the gateway scales out.
-function rateLimiter(limitPerMinute) {
+// Hit counters for a fixed one-minute window: count(ip) resolves to the hits so far this minute, this one included.
+// In memory the limit is per gateway instance; Redis shares it across instances.
+function memoryCounter() {
   const hits = new Map();
   const timer = setInterval(() => hits.clear(), 60_000);
   timer.unref();
-  const allow = (ip) => {
+  return async (ip) => {
     const n = (hits.get(ip) || 0) + 1;
     hits.set(ip, n);
-    return n <= limitPerMinute;
+    return n;
+  };
+}
+
+function redisCounter(redis) {
+  return async (ip) => {
+    const key = `ratelimit:${ip}:${Math.floor(Date.now() / 60_000)}`;
+    const [[err, n]] = await redis.multi().incr(key).expire(key, 60).exec();
+    if (err) throw err;
+    return n;
+  };
+}
+
+function rateLimiter(limitPerMinute, count) {
+  const allow = async (ip) => {
+    try {
+      return (await count(ip)) <= limitPerMinute;
+    } catch (err) {
+      // Fail open: an unreachable Redis must not take the whole API down with it.
+      console.error('rate limiter unavailable, allowing request:', err.message);
+      return true;
+    }
   };
   const limit = (req, res, next) => {
-    if (!allow(req.ip)) return fail(res, 429, 'RATE_LIMITED', 'too many requests, slow down');
-    next();
+    allow(req.ip).then((ok) => (ok ? next() : fail(res, 429, 'RATE_LIMITED', 'too many requests, slow down')));
   };
   limit.allow = allow;
   return limit;
@@ -134,7 +155,7 @@ async function checkHealth(url) {
   }
 }
 
-function createApp({ services, secret, rateLimitPerMinute = 300 }) {
+function createApp({ services, secret, rateLimitPerMinute = 300, countHits = memoryCounter() }) {
   if (!secret) throw new Error('JWT secret is required');
   const app = express();
   app.disable('x-powered-by');
@@ -143,7 +164,7 @@ function createApp({ services, secret, rateLimitPerMinute = 300 }) {
     res.status(200).json({ status: 'ok', service: 'api-gateway' });
   });
 
-  const limiter = rateLimiter(rateLimitPerMinute);
+  const limiter = rateLimiter(rateLimitPerMinute, countHits);
   app.use('/api/v1', limiter);
 
   app.get('/api/v1/health', async (req, res) => {
@@ -177,14 +198,14 @@ function createApp({ services, secret, rateLimitPerMinute = 300 }) {
   });
 
   // For server.on('upgrade'). Browsers cannot set headers on a WebSocket, so the token may come as ?access_token=.
-  app.upgrade = (req, socket, head) => {
+  app.upgrade = async (req, socket, head) => {
     const reject = (status, text) => socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
     socket.on('error', () => socket.destroy());
     const url = new URL(req.url, 'http://gateway');
     const path = url.pathname.startsWith('/api/v1/') ? url.pathname.slice('/api/v1'.length) : '';
     const hit = WS_ROUTES.find(([re]) => re.test(path));
     if (!hit || !services[hit[1]]) return reject(404, 'Not Found');
-    if (!limiter.allow(socket.remoteAddress)) return reject(429, 'Too Many Requests');
+    if (!(await limiter.allow(socket.remoteAddress))) return reject(429, 'Too Many Requests');
 
     const token = url.searchParams.get('access_token');
     url.searchParams.delete('access_token'); // keep the token out of upstream URLs and logs
@@ -221,4 +242,4 @@ function createApp({ services, secret, rateLimitPerMinute = 300 }) {
   return app;
 }
 
-module.exports = { createApp };
+module.exports = { createApp, redisCounter };
