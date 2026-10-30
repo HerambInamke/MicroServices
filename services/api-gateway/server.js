@@ -1,6 +1,16 @@
-const { createApp } = require('./app');
+const Redis = require('ioredis');
+const { createApp, redisCounter } = require('./app');
 
 const PORT = process.env.PORT || 3000;
+
+// With Redis every gateway instance shares one per-IP limit. Fail fast while it is down (the limiter then lets
+// requests through) instead of queueing commands and stalling every request.
+function hitCounter(url) {
+  if (!url) return undefined; // in-memory, per instance
+  const redis = new Redis(url, { enableOfflineQueue: false, maxRetriesPerRequest: 1, commandTimeout: 500 });
+  redis.on('error', (err) => console.error('redis:', err.message));
+  return redisCounter(redis);
+}
 
 function requireEnv(name) {
   const v = process.env[name];
@@ -14,6 +24,7 @@ function requireEnv(name) {
 const app = createApp({
   secret: requireEnv('JWT_SECRET'),
   rateLimitPerMinute: Number(process.env.RATE_LIMIT_PER_MINUTE) || 300,
+  countHits: hitCounter(process.env.REDIS_URL),
   services: {
     auth: requireEnv('AUTH_URL'),
     profile: requireEnv('PROFILE_URL'),

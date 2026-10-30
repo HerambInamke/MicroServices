@@ -26,11 +26,13 @@ path. It also rate-limits per IP, proxies WebSocket upgrades, and reports aggreg
 | Variable | Notes |
 |---|---|
 | `JWT_SECRET` | Must equal auth-identity's |
-| `RATE_LIMIT_PER_MINUTE` | Per IP, default 300 (in memory, per instance) |
+| `RATE_LIMIT_PER_MINUTE` | Per IP per minute, default 300 |
+| `REDIS_URL` | Optional. Set: one limit shared by every gateway instance. Unset: in memory, per instance. If Redis is unreachable, requests are let through (and logged) rather than refused |
 | `AUTH_URL`, `PROFILE_URL`, `CATALOG_URL`, `MEDIA_URL`, `ORDER_URL`, `LEDGER_URL`, `QR_URL`, `COUNTERFEIT_URL`, `SEARCH_URL`, `INVENTORY_URL`, `ANALYTICS_URL`, `NOTIFICATIONS_URL`, `CHAT_URL`, `REVIEWS_URL` | Base URLs of the services, all required |
 
 ## Tests
 
 ```bash
-npm ci && npm test   # stub upstream; no other services needed
+npm ci && npm test                                    # stub upstream; no other services needed
+TEST_REDIS_URL=redis://localhost:6379/5 npm test      # plus the shared Redis limiter
 ```
