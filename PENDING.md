@@ -1,6 +1,6 @@
 # Pending work: Provenance (MicroServices)
 
-Snapshot: 2026-10-30. D1, D2 (Postgres services), D3, D6 and B1 done on 2026-10-30; see below. Phases 1–5 are built and merged.
+Snapshot: 2026-10-30. D1 (#28), D3 (#29), D6 (#30), D2 for the Postgres services (#31) and B1 done on 2026-10-30. Phases 1–5 are built and merged.
 Phase 6 (OSS polish) is mostly done. Smoke test Phases 1–5 and CI (17 jobs) are green.
 
 To resume: open this file and pick a section. Items are grouped by **what blocks them**.
