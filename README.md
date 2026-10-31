@@ -145,6 +145,8 @@ docker compose down -v                    # stop and wipe all data
 
 Logging in as the seeded admin: `POST /api/v1/auth/login {"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}`.
 
+Web app (React SPA against the gateway): see [`apps/web/README.md`](apps/web/README.md).
+
 ---
 
 ## 3. Configuration: the `.env` file
