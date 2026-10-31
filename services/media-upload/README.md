@@ -16,9 +16,11 @@ bytes, not from the client's header.
 ## Configuration
 
 `DB_URL`, `MINIO_URL`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_BUCKET`, `PORT`.
+SQL migrations in `migrations/` run on start, in filename order, each once; add a change as the next numbered file.
 
 ## Tests
 
 ```bash
 go test ./...
+TEST_DB_URL=postgres://... go test ./...       # plus the Postgres migrations
 ```

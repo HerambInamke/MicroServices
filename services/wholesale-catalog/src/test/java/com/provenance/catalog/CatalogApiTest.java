@@ -229,7 +229,7 @@ class CatalogApiTest {
         String key = Long.toString(id);
         List<Object[]> rows = outbox();
         assertThat(rows).hasSize(1);
-        assertThat(rows.get(0)[0]).isEqualTo("product.created");
+        assertThat(rows.get(0)[0]).isEqualTo("product.changed");
         assertThat(rows.get(0)[1]).isEqualTo(key);
         JsonNode created = (JsonNode) rows.get(0)[2];
         assertThat(created.get("eventType").asText()).isEqualTo("ProductCreated");
@@ -251,7 +251,11 @@ class CatalogApiTest {
         mvc.perform(as(delete("/products/" + id), "w1", "wholesaler"))
                 .andExpect(status().isOk());
         rows = outbox();
-        assertThat(rows).extracting(r -> r[0]).containsExactly("product.created", "product.updated", "product.deleted");
+        // One topic keyed by product id, so Kafka keeps a product's create, update and delete in order.
+        assertThat(rows).extracting(r -> r[0]).containsOnly("product.changed");
+        assertThat(rows).extracting(r -> r[1]).containsOnly(key);
+        assertThat(rows).extracting(r -> ((JsonNode) r[2]).get("eventType").asText())
+                .containsExactly("ProductCreated", "ProductUpdated", "ProductDeleted");
         assertThat(((JsonNode) rows.get(1)[2]).at("/payload/name").asText()).isEqualTo("Renamed");
         assertThat(((JsonNode) rows.get(2)[2]).get("payload").toString()).isEqualTo("{\"productId\":" + id + "}");
     }

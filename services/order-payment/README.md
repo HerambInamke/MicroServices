@@ -33,6 +33,13 @@ An event is never lost to a Kafka outage; delivery is at least once, with a stab
 `DB_URL`, `KAFKA_BROKERS`, `CATALOG_URL`, `INVENTORY_URL`, `PORT`. Optional `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`
 and `RAZORPAY_WEBHOOK_SECRET`; without them the payment endpoints answer 503 `PAYMENTS_NOT_CONFIGURED`.
 
+## Migrations
+
+The schema is managed by Alembic (`migrations/versions/`); `alembic upgrade head` runs on start. Databases created
+by the old `create_all` are adopted by the baseline `0001`. To change the schema, edit `models.py`, then from this
+directory run `DB_URL=postgresql+psycopg://... alembic revision --autogenerate -m "add offer_id to order items" --rev-id 0002`,
+review the generated file and commit it. `test_migrations_match_models` fails if `models.py` and the migrations drift.
+
 ## Tests
 
 ```bash

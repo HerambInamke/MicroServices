@@ -280,3 +280,24 @@ def test_weaviate_store_insert_get_nearest():
     finally:
         store.client.collections.delete(name)
         store.close()
+
+
+@pytest.mark.skipif(not os.getenv("TEST_WEAVIATE_URL"), reason="TEST_WEAVIATE_URL not set")
+def test_weaviate_store_list_pages_past_one_cursor_batch():
+    from store import WeaviateStore
+
+    name = f"DesignTest{uuid.uuid4().hex[:8]}"
+    store = WeaviateStore.connect(os.environ["TEST_WEAVIATE_URL"], collection=name)
+    try:
+        store.ensure_collection()
+        base = {"productId": 1, "wholesalerId": "w1", "mediaId": str(uuid.uuid4()), "referenceImageUrl": "/x"}
+        ids = {store.insert(base, unit(VECTORS["red"]))["id"] for _ in range(130)}  # the client iterator fetches 100 per batch
+        pages = [store.list_page(p, 50) for p in (1, 2, 3)]
+        assert all(total == 130 for _, total in pages)
+        assert [len(rows) for rows, _ in pages] == [50, 50, 30]
+        seen = [d["id"] for rows, _ in pages for d in rows]
+        assert seen == sorted(ids)
+        assert store.list_page(4, 50) == ([], 130)
+    finally:
+        store.client.collections.delete(name)
+        store.close()

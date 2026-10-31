@@ -54,7 +54,7 @@ public class ProductService {
         Product p = new Product(caller.userId());
         apply(p, f);
         Product saved = products.save(p);
-        events.publish("product.created", "ProductCreated", saved.getId().toString(), EventPublisher.productPayload(saved));
+        events.publish("product.changed", "ProductCreated", saved.getId().toString(), EventPublisher.productPayload(saved));
         return saved;
     }
 
@@ -64,7 +64,7 @@ public class ProductService {
         caller.requireOwner(p.getWholesalerId());
         apply(p, f);
         Product saved = products.save(p);
-        events.publish("product.updated", "ProductUpdated", saved.getId().toString(), EventPublisher.productPayload(saved));
+        events.publish("product.changed", "ProductUpdated", saved.getId().toString(), EventPublisher.productPayload(saved));
         return saved;
     }
 
@@ -73,7 +73,7 @@ public class ProductService {
         Product p = get(id);
         caller.requireOwner(p.getWholesalerId());
         products.delete(p);
-        events.publish("product.deleted", "ProductDeleted", id.toString(), Map.of("productId", id));
+        events.publish("product.changed", "ProductDeleted", id.toString(), Map.of("productId", id));
     }
 
     @Transactional
