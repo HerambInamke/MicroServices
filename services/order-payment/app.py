@@ -170,6 +170,9 @@ def create_app(session_factory: sessionmaker, catalog, razorpay=None, webhook_se
                 raise ApiError(409, "OFFER_NOT_ACCEPTED", "only an accepted offer can price an order")
             if (offer.wholesaler_id, offer.product_id, offer.qty) != (wholesaler_id, str(line.productId), line.qty):
                 raise ApiError(422, "OFFER_MISMATCH", "the offer is for a different seller, product or quantity")
+            # Fail fast, before stock is reserved; the UNIQUE offer_id still settles concurrent orders below.
+            if session.scalar(select(OrderItem.id).where(OrderItem.offer_id == line.offerId)) is not None:
+                raise ApiError(409, "OFFER_ALREADY_USED", "this offer has already been used for an order")
             quotes[i] = replace(quotes[i], unit_price=offer.unit_price, total=offer.unit_price * line.qty)
 
         order = Order(
