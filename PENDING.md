@@ -72,7 +72,6 @@ Never-ticked "Human review" boxes, for you to look over and tick:
 | # | Item | Where | Risk if left |
 |---|---|---|---|
 | D4 | **Ledger replicas.** Handoffs now use an immudb precondition (concurrent writers get 409), so the lock is gone. Accept claims the offer before going on-chain, so a redirect can't strand a tx. Left: the outbox relay has no cross-replica lease (add one before running two replicas). | `provenance-ledger/events.go` | Low (single instance) |
-| D9 | **Ledger history scan** caps at 1000 entries per piece. Page it if pieces get long histories (#27). | `provenance-ledger/store.go` | Low |
 | D10 | **Trust-score weights** (0.7 rating / 0.3 fulfilment, prior m=3, C=5) are a first guess; tune with real data. | `services/reviews/score.js` | Product |
 
 ---

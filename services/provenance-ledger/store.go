@@ -174,24 +174,30 @@ func (s *immuStore) Sent(ctx context.Context, storeKey []byte) error {
 	return err
 }
 
-// maxHistory caps one scan. shortcut: a piece passes through a handful of actors; page the scan if that ever changes.
-const maxHistory = 1000
+// historyPage is how many events one scan reads; a var so tests can force several pages.
+var historyPage uint64 = 1000
 
 func (s *immuStore) History(ctx context.Context, id string) ([]Event, error) {
 	// Event keys are zero-padded, so the key-ordered scan is the history order.
-	list, err := s.c.Scan(ctx, &schema.ScanRequest{Prefix: []byte("piece:" + id + ":event:"), Limit: maxHistory})
-	if err != nil {
-		return nil, err
-	}
-	events := make([]Event, 0, len(list.Entries))
-	for _, entry := range list.Entries {
-		var e Event
-		if err := json.Unmarshal(entry.Value, &e); err != nil {
+	events := []Event{}
+	var seek []byte
+	for {
+		list, err := s.c.Scan(ctx, &schema.ScanRequest{Prefix: []byte("piece:" + id + ":event:"), SeekKey: seek, Limit: historyPage})
+		if err != nil {
 			return nil, err
 		}
-		events = append(events, e)
+		for _, entry := range list.Entries {
+			var e Event
+			if err := json.Unmarshal(entry.Value, &e); err != nil {
+				return nil, err
+			}
+			events = append(events, e)
+		}
+		if uint64(len(list.Entries)) < historyPage {
+			return events, nil
+		}
+		seek = list.Entries[len(list.Entries)-1].Key // the next page starts after it (InclusiveSeek is false)
 	}
-	return events, nil
 }
 
 func (s *immuStore) Get(ctx context.Context, id string) (Piece, error) {
