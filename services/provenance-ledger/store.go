@@ -15,6 +15,9 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
+// ErrConflict means the piece changed after it was read, so the update was not applied.
+var ErrConflict = errors.New("conflict")
+
 type Piece struct {
 	ID          string    `json:"id"`
 	ProductID   int64     `json:"productId,omitempty"` // catalog product id; 0 when not linked
@@ -26,6 +29,7 @@ type Piece struct {
 	LastHash    string    `json:"lastDataHash,omitempty"`
 	Pending     *Offer    `json:"pendingHandoff,omitempty"`
 	CreatedAt   time.Time `json:"createdAt"`
+	Rev         uint64    `json:"-"` // immudb tx that wrote the state read; Update fails with ErrConflict if it moved on
 }
 
 // Offer is a handoff the current owner has proposed and the receiver has not yet signed.
@@ -35,6 +39,7 @@ type Offer struct {
 	Role       string    `json:"role"`
 	DataHash   string    `json:"dataHash"` // what the receiver must personal_sign
 	OfferedAt  time.Time `json:"offeredAt"`
+	Accepting  bool      `json:"accepting,omitempty"` // the receiver's signed accept is on its way on-chain
 }
 
 type Event struct {
@@ -59,8 +64,9 @@ type Store interface {
 	Create(ctx context.Context, p Piece, first Event, out Outgoing) error
 	Get(ctx context.Context, id string) (Piece, error)
 	// Update replaces the piece state and, when e is set, appends that history entry and its event (out, required
-	// with e) in the same transaction.
-	Update(ctx context.Context, p Piece, e *Event, out *Outgoing) error
+	// with e) in the same transaction. It returns ErrConflict when the piece changed since Get returned p, and on
+	// success moves p.Rev to the new transaction.
+	Update(ctx context.Context, p *Piece, e *Event, out *Outgoing) error
 	History(ctx context.Context, id string) ([]Event, error)
 	// Pending lists unsent events, each piece's in history order. Sent removes one after Kafka acknowledged it.
 	Pending(ctx context.Context, limit int) ([]Pending, error)
@@ -109,14 +115,17 @@ func (s *immuStore) Create(ctx context.Context, p Piece, first Event, out Outgoi
 	return err
 }
 
-func (s *immuStore) Update(ctx context.Context, p Piece, e *Event, out *Outgoing) error {
+func (s *immuStore) Update(ctx context.Context, p *Piece, e *Event, out *Outgoing) error {
 	pb, err := json.Marshal(p)
 	if err != nil {
 		return err
 	}
 	req := &schema.SetRequest{
-		KVs:           []*schema.KeyValue{{Key: pieceKey(p.ID), Value: pb}},
-		Preconditions: []*schema.Precondition{schema.PreconditionKeyMustExist(pieceKey(p.ID))},
+		KVs: []*schema.KeyValue{{Key: pieceKey(p.ID), Value: pb}},
+		// Optimistic concurrency across replicas: of two writers that read the same state, only the first commits.
+		Preconditions: []*schema.Precondition{
+			schema.PreconditionKeyMustExist(pieceKey(p.ID)), schema.PreconditionKeyNotModifiedAfterTX(pieceKey(p.ID), p.Rev),
+		},
 	}
 	if e != nil {
 		eb, err := json.Marshal(e)
@@ -131,8 +140,15 @@ func (s *immuStore) Update(ctx context.Context, p Piece, e *Event, out *Outgoing
 		req.KVs = append(req.KVs, &schema.KeyValue{Key: eventKey(p.ID, e.Index), Value: eb}, &schema.KeyValue{Key: outboxKey(p.ID, e.Index), Value: ob})
 		req.Preconditions = append(req.Preconditions, schema.PreconditionKeyMustNotExist(eventKey(p.ID, e.Index)))
 	}
-	_, err = s.c.SetAll(ctx, req)
-	return err
+	hdr, err := s.c.SetAll(ctx, req)
+	if err != nil && strings.Contains(err.Error(), "precondition failed") {
+		return ErrConflict
+	}
+	if err != nil {
+		return err
+	}
+	p.Rev = hdr.Id
+	return nil
 }
 
 func (s *immuStore) Pending(ctx context.Context, limit int) ([]Pending, error) {
@@ -186,6 +202,6 @@ func (s *immuStore) Get(ctx context.Context, id string) (Piece, error) {
 		}
 		return Piece{}, err
 	}
-	var p Piece
+	p := Piece{Rev: entry.Tx}
 	return p, json.Unmarshal(entry.Value, &p)
 }

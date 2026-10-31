@@ -1,0 +1,4 @@
+# TLS for $DOMAIN via automatic HTTPS. reverse_proxy passes WebSocket upgrades (/api/v1/ws/) through as-is.
+{$DOMAIN} {
+	reverse_proxy api-gateway:3000
+}

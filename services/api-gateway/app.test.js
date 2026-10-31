@@ -195,6 +195,25 @@ test('gateways sharing a counter share one limit', async () => {
   assert.deepEqual(await hitAll([opts, opts], 3), [404, 404, 429]);
 });
 
+test('behind a trusted proxy each X-Forwarded-For client gets its own limit, on HTTP and WebSocket', async () => {
+  const app = createApp({ services: { auth: upstreamURL, chat: upstreamURL }, secret: SECRET, rateLimitPerMinute: 1, trustProxy: '1' });
+  const server = http.createServer(app);
+  server.on('upgrade', app.upgrade);
+  const port = await listen(server);
+  const hit = (ip) => fetch(`http://127.0.0.1:${port}/api/v1/products`, { headers: { 'x-forwarded-for': ip } }).then((r) => r.status);
+  const ws = (ip) =>
+    new Promise((resolve) => {
+      const req = http.request(`http://127.0.0.1:${port}/api/v1/ws/chat/t1`, { headers: { connection: 'Upgrade', upgrade: 'websocket', 'x-forwarded-for': ip } });
+      req.on('response', (res) => resolve(res.statusCode));
+      req.end();
+    });
+  const codes = [await hit('203.0.113.1'), await hit('203.0.113.2'), await hit('203.0.113.1')];
+  const wsCodes = [await ws('203.0.113.3'), await ws('203.0.113.4'), await ws('203.0.113.3')];
+  server.close();
+  assert.deepEqual(codes, [404, 404, 429]);
+  assert.deepEqual(wsCodes, [401, 401, 429]); // 401: past the limiter, no token
+});
+
 test('rate limiter fails open when its store is down', async () => {
   const down = async () => {
     throw new Error('connection refused');

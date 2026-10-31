@@ -61,8 +61,9 @@ func (k *kafkaSender) Send(ctx context.Context, o Outgoing) error {
 
 // relayOnce sends pending outbox entries oldest first per piece and deletes each one Kafka acknowledged. It stops at
 // the first failure so no later event overtakes it. Delivery is at least once: a crash between the send and the
-// delete resends the same envelope, which consumers de-duplicate on eventId. No cross-replica lock: the ledger
-// already runs as a single replica (see lockPiece).
+// delete resends the same envelope, which consumers de-duplicate on eventId.
+// shortcut: no cross-replica lease, so two replicas could interleave one piece's events; add one before scaling out
+// (renewing a lease in immudb appends a tx to the immutable log every tick, so keep it off the idle path).
 func relayOnce(ctx context.Context, store Store, send func(context.Context, Outgoing) error) (int, error) {
 	pending, err := store.Pending(ctx, 100)
 	if err != nil {

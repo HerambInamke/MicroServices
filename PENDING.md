@@ -1,7 +1,8 @@
 # Pending work: Provenance (MicroServices)
 
 Snapshot: 2026-10-30. Done on 2026-10-30: D1 (#28), D3 (#29), D6 (#30), D2 outbox everywhere (#31 order-payment + catalog, #33 ledger,
-#34 chat, which runs MongoDB as a single-node replica set), and B1. Phases 1–5 are built and merged.
+#34 chat, which runs MongoDB as a single-node replica set), D5 schema migrations (Alembic in order-payment, embedded
+SQL files in media-upload), and B1. D8 (Weaviate cursor paging) done on 2026-10-31. Phases 1–5 are built and merged.
 Phase 6 (OSS polish) is mostly done. Smoke test Phases 1–5 and CI (17 jobs) are green.
 
 To resume: open this file and pick a section. Items are grouped by **what blocks them**.
@@ -55,11 +56,14 @@ Never-ticked "Human review" boxes, for you to look over and tick:
 
 - [ ] Real values in `.env`: `JWT_SECRET`, `ADMIN_EMAIL` / `ADMIN_PASSWORD`, `POSTGRES_PASSWORD`, `MONGO_PASSWORD`,
       `MINIO_PASSWORD`, `CLICKHOUSE_PASSWORD`, `PUBLIC_BASE_URL`, plus Razorpay.
-- [ ] Close the infrastructure ports that compose publishes (5432, 27017, 9000/9001, 9092/29092, 2181, 8545, 3322).
-      Only the gateway may be reachable; otherwise anyone can inject fake Kafka events.
-- [ ] TLS reverse proxy in front of `:3000` that passes WebSocket upgrades for `/api/v1/ws/`.
-- [ ] immudb still uses its default login `immudb`/`immudb`; change it, or make sure 3322 is closed.
-- [ ] Volume backups (or move to managed databases).
+      `docker-compose.prod.yml` refuses to start until these (plus `IMMUDB_PASSWORD`, `DOMAIN`) are set.
+- [x] Close the infrastructure ports that compose publishes (5432, 27017, 9000/9001, 9092/29092, 2181, 8545, 3322).
+      Only the gateway may be reachable; otherwise anyone can inject fake Kafka events. (`docker-compose.prod.yml`)
+- [x] TLS reverse proxy in front of `:3000` that passes WebSocket upgrades for `/api/v1/ws/`. (Caddy, `infra/Caddyfile`)
+- [x] immudb still uses its default login `immudb`/`immudb`; change it, or make sure 3322 is closed.
+      (`IMMUDB_PASSWORD` in the prod override; ledger uses the same value)
+- [ ] Volume backups (or move to managed databases). The prod override gives every datastore a named volume;
+      snapshotting them is still to set up.
 
 ---
 
@@ -67,10 +71,8 @@ Never-ticked "Human review" boxes, for you to look over and tick:
 
 | # | Item | Where | Risk if left |
 |---|---|---|---|
-| D4 | **Ledger handoff lock is in process.** It is correct only with one ledger replica; use an immudb precondition before scaling out. | `services/provenance-ledger/handlers.go` | Low (single instance) |
-| D5 | **No schema migrations** for order-payment (create_all) and media-upload (IF NOT EXISTS). Adopt Alembic / a migration tool at the first schema change. | `order-payment/app.py`, `media-upload/store.go` | Low now |
+| D4 | **Ledger replicas.** Handoffs now use an immudb precondition (concurrent writers get 409), so the lock is gone. Accept claims the offer before going on-chain, so a redirect can't strand a tx. Left: the outbox relay has no cross-replica lease (add one before running two replicas). | `provenance-ledger/events.go` | Low (single instance) |
 | D7 | **Analytics:** if the catalog is unreachable during ingest, the line is filed under category 0 for good. Add a backfill job (#26). | `services/analytics/ingest.py` | Low |
-| D8 | **Weaviate paging** is offset-based, unordered, capped at 10k. Switch to the cursor API for large registries. | `counterfeit-detection/store.py` | Low |
 | D9 | **Ledger history scan** caps at 1000 entries per piece. Page it if pieces get long histories (#27). | `provenance-ledger/store.go` | Low |
 | D10 | **Trust-score weights** (0.7 rating / 0.3 fulfilment, prior m=3, C=5) are a first guess; tune with real data. | `services/reviews/score.js` | Product |
 
@@ -93,8 +95,6 @@ Never-ticked "Human review" boxes, for you to look over and tick:
   still hold commits with the old attribution trailer (local only; already deleted on GitHub). To remove them:
   `git branch -D phase5-chat phase5-reviews phase5-wrapup phase6-ci phase6-service-docs`.
 - Merged local branches `inventory-internal-guard`, `design-delete`, `offer-response-notify` can be deleted (`git branch -d ...`).
-- Product events (`product.created` / `product.deleted`) travel on separate topics, so a create and a quick delete
-  can reach search out of order. Designs use one topic (`design.changed`) for this reason; products could follow.
 - Not yet security-reviewed: auth `GET /users/:id` exposure rules, and order-payment's party check (reviews relies on it).
 
 ---

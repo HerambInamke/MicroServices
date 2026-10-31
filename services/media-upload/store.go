@@ -38,19 +38,6 @@ type ObjectStore interface {
 	Remove(ctx context.Context, key string) error
 }
 
-// shortcut: schema is applied at startup with IF NOT EXISTS, not versioned migrations; adopt a migration tool when the first schema change lands.
-const schema = `
-CREATE TABLE IF NOT EXISTS media_files (
-	id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-	owner_id     text NOT NULL,
-	object_key   text NOT NULL UNIQUE,
-	content_type text NOT NULL,
-	size_bytes   bigint NOT NULL,
-	kind         text NOT NULL,
-	uploaded_at  timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_media_owner ON media_files (owner_id);`
-
 type pgStore struct{ pool *pgxpool.Pool }
 
 func newPGStore(ctx context.Context, url string) (*pgStore, error) {
@@ -62,7 +49,7 @@ func newPGStore(ctx context.Context, url string) (*pgStore, error) {
 		pool.Close()
 		return nil, err
 	}
-	if _, err := pool.Exec(ctx, schema); err != nil {
+	if err := migrate(ctx, pool); err != nil {
 		pool.Close()
 		return nil, err
 	}

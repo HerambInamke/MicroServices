@@ -1,4 +1,4 @@
-"""Keeps the index in step with the catalog's product.* and counterfeit-detection's design.changed events."""
+"""Keeps the index in step with the catalog's product.changed and counterfeit-detection's design.changed events."""
 
 import json
 import logging
@@ -7,7 +7,7 @@ from index import design_doc, product_doc
 
 log = logging.getLogger("search")
 
-TOPICS = ["product.created", "product.updated", "product.deleted", "design.changed"]
+TOPICS = ["product.changed", "design.changed"]
 
 
 def handle(index, event: dict) -> None:

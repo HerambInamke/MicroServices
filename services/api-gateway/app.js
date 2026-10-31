@@ -155,10 +155,13 @@ async function checkHealth(url) {
   }
 }
 
-function createApp({ services, secret, rateLimitPerMinute = 300, countHits = memoryCounter() }) {
+function createApp({ services, secret, rateLimitPerMinute = 300, countHits = memoryCounter(), trustProxy }) {
   if (!secret) throw new Error('JWT secret is required');
   const app = express();
   app.disable('x-powered-by');
+  // Behind a proxy, req.ip comes from X-Forwarded-For. Only set it there: a directly exposed gateway would trust spoofed headers.
+  // Express reads a string as proxy addresses, so a hop count like "1" must become a number.
+  if (trustProxy) app.set('trust proxy', /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy);
 
   app.get('/health', (req, res) => {
     res.status(200).json({ status: 'ok', service: 'api-gateway' });
@@ -205,7 +208,8 @@ function createApp({ services, secret, rateLimitPerMinute = 300, countHits = mem
     const path = url.pathname.startsWith('/api/v1/') ? url.pathname.slice('/api/v1'.length) : '';
     const hit = WS_ROUTES.find(([re]) => re.test(path));
     if (!hit || !services[hit[1]]) return reject(404, 'Not Found');
-    if (!(await limiter.allow(socket.remoteAddress))) return reject(429, 'Too Many Requests');
+    // Give the raw upgrade request Express's req.ip, so it honours 'trust proxy' exactly as HTTP requests do.
+    if (!(await limiter.allow(Object.setPrototypeOf(req, app.request).ip))) return reject(429, 'Too Many Requests');
 
     const token = url.searchParams.get('access_token');
     url.searchParams.delete('access_token'); // keep the token out of upstream URLs and logs
