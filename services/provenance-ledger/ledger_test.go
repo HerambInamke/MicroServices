@@ -292,6 +292,23 @@ func TestImmuStore(t *testing.T) {
 	if evs, err := st.History(ctx, p.ID); err != nil || len(evs) != 2 || evs[0].Type != "registered" || evs[1].UserID != "d1" {
 		t.Fatalf("history: %+v (%v)", evs, err)
 	}
+	// A third event and a page of 2 make History read a full page, a short page, and stitch them in order.
+	defer func(n uint64) { historyPage = n }(historyPage)
+	historyPage = 2
+	p.OwnerID = "r1"
+	if err := st.Update(ctx, &p, &Event{Index: 2, Type: "handoff", UserID: "r1"}, &handoff); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Sent(ctx, outboxKey(p.ID, 2)); err != nil {
+		t.Fatal(err)
+	}
+	if evs, err := st.History(ctx, p.ID); err != nil || len(evs) != 3 || evs[0].Type != "registered" || evs[1].UserID != "d1" || evs[2].UserID != "r1" {
+		t.Fatalf("paged history: %+v (%v)", evs, err)
+	}
+	historyPage = 1 // pages of one, ending on an empty page
+	if evs, err := st.History(ctx, p.ID); err != nil || len(evs) != 3 || evs[2].UserID != "r1" {
+		t.Fatalf("paged history (1): %+v (%v)", evs, err)
+	}
 	if err := st.Update(ctx, &Piece{ID: uuid.NewString()}, nil, nil); err == nil {
 		t.Fatal("updating a missing piece must fail")
 	}
