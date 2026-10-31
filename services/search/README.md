@@ -15,7 +15,7 @@ wholesalers appear on the next admin reindex, which rebuilds everything from the
 
 ## Events
 
-Consumes `product.created`, `product.updated`, `product.deleted` (catalog) and `design.changed`
+Consumes `product.changed` (catalog) and `design.changed`
 (counterfeit-detection), group `search`.
 
 ## Configuration
