@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import create_app
-from ingest import rows
+from ingest import TOPICS, rows
 
 
 def event(kind, payload, days_ago=0):
@@ -45,6 +45,7 @@ def test_other_events_map_to_one_row():
     pay = rows(paid("o1", "w1", "1149.97"), lambda _: 0)[0]
     assert (pay["event_type"], pay["amount"], pay["status"]) == ("PaymentCompleted", Decimal("1149.97"), "paid")
     assert rows(status("o1", "w1", "cancelled"), lambda _: 0)[0]["amount"] == 0
+    assert "product.changed" in TOPICS
     prod = rows(event("ProductCreated", {"productId": 5, "wholesalerId": "w1", "categoryId": 3}), lambda _: 0)[0]
     assert (prod["product_id"], prod["category_id"]) == (5, 3)
     piece = rows(event("PieceHandoffSigned", {"pieceId": "p1", "role": "retailer"}), lambda _: 0)[0]

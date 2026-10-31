@@ -12,7 +12,7 @@ log = logging.getLogger("analytics")
 TOPICS = [
     "order.placed", "order.status.changed", "payment.completed",
     "piece.registered", "piece.handoff.signed",
-    "product.created", "product.updated", "product.deleted",
+    "product.changed",
 ]
 
 

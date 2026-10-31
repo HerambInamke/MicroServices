@@ -304,7 +304,7 @@ const found = await eventually('product in search', async () => {
 });
 assert.equal(found.wholesalerId, wholesaler.id);
 assert.ok((await api('GET', `/search/suggest?q=${encodeURIComponent(paithaniName.slice(0, 6))}`)).data.length > 0);
-step(`new product searchable via product.created (${paithaniName})`);
+step(`new product searchable via product.changed (${paithaniName})`);
 
 const designSearch = () => api('GET', `/search?q=${encodeURIComponent('Kanjeevaram')}&type=design`);
 await eventually('design in search', async () => (await designSearch()).data?.some((d) => d.id === design.data.id));

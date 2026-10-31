@@ -93,8 +93,6 @@ Never-ticked "Human review" boxes, for you to look over and tick:
   still hold commits with the old attribution trailer (local only; already deleted on GitHub). To remove them:
   `git branch -D phase5-chat phase5-reviews phase5-wrapup phase6-ci phase6-service-docs`.
 - Merged local branches `inventory-internal-guard`, `design-delete`, `offer-response-notify` can be deleted (`git branch -d ...`).
-- Product events (`product.created` / `product.deleted`) travel on separate topics, so a create and a quick delete
-  can reach search out of order. Designs use one topic (`design.changed`) for this reason; products could follow.
 - Not yet security-reviewed: auth `GET /users/:id` exposure rules, and order-payment's party check (reviews relies on it).
 
 ---
