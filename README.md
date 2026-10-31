@@ -211,7 +211,8 @@ The compose file runs the whole platform on one machine (a VM with 4+ vCPU and 1
    `docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d`.
    `docker-compose.prod.yml` unpublishes every infrastructure and service port (only Caddy listens, on
    80/443), adds Caddy (`infra/Caddyfile`) with automatic HTTPS for `DOMAIN` in front of the gateway
-   (WebSocket upgrades for `/api/v1/ws/` pass through), gives Mongo a named data volume, and refuses to
+   (WebSocket upgrades for `/api/v1/ws/` pass through) and sets `TRUST_PROXY=1` so the gateway rate-limits
+   per client IP from `X-Forwarded-For`, gives every datastore a named data volume, and refuses to
    start while any of `JWT_SECRET`, `ADMIN_PASSWORD`, `POSTGRES_PASSWORD`, `MONGO_PASSWORD`, `MINIO_PASSWORD`,
    `CLICKHOUSE_PASSWORD`, `IMMUDB_PASSWORD`, `PUBLIC_BASE_URL`, `DOMAIN` is unset.
    Check what will be published with `docker compose -f docker-compose.yml -f docker-compose.prod.yml config`.
@@ -221,14 +222,13 @@ The compose file runs the whole platform on one machine (a VM with 4+ vCPU and 1
 7. For the real chain: deploy `contracts/src/ProvenanceRegistry.sol` with Foundry (`contracts/deploy.sh`),
    set `CHAIN_RPC_URL`, `RELAYER_KEY`, `CONTRACT_ADDRESS`, and remove the `anvil` / `contract-deploy`
    dependency from `provenance-ledger` in compose.
-8. Backups: only Mongo (and Caddy's certificates) have named volumes; the other stores keep their data in
-   anonymous volumes or the container itself, which survive restarts but not a `down`/recreate. Add named
-   volumes for them and snapshot those (or move to managed databases by changing the URLs in compose).
+8. Backups: with the prod override, Postgres, Mongo, MinIO, immudb, ClickHouse, Redis, Elasticsearch,
+   Weaviate and Caddy's certificates live in named volumes (`docker volume ls`), so `down` + `up` keeps them
+   (`down -v` deletes them). Snapshot those volumes (or move to managed databases by changing the URLs in
+   compose). The local Anvil chain has no volume; use a real chain in production (step 7).
 
 Known limits worth knowing before going live:
 - The gateway rate limiter is in memory, per gateway instance.
-- Behind Caddy the gateway sees the proxy's address, not the client's, so the per-IP rate limit is shared by
-  all clients until the gateway trusts `X-Forwarded-For` from the proxy.
 - Events are published after the database write without an outbox: if Kafka is down at that moment the
   event is lost (the main data is safe; inbox/search/analytics miss it).
 - Counterfeit matching threshold is uncalibrated (see `tasks/open-items.md` locally).

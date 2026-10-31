@@ -61,9 +61,8 @@ Never-ticked "Human review" boxes, for you to look over and tick:
 - [x] TLS reverse proxy in front of `:3000` that passes WebSocket upgrades for `/api/v1/ws/`. (Caddy, `infra/Caddyfile`)
 - [x] immudb still uses its default login `immudb`/`immudb`; change it, or make sure 3322 is closed.
       (`IMMUDB_PASSWORD` in the prod override; ledger uses the same value)
-- [ ] Gateway rate limit behind the proxy: it keys on the proxy's IP, so all clients share one bucket. Trust
-      `X-Forwarded-For` from Caddy (`app.set('trust proxy', ...)` plus the WebSocket path).
-- [ ] Volume backups (or move to managed databases). Only Mongo has a named volume so far.
+- [ ] Volume backups (or move to managed databases). The prod override gives every datastore a named volume;
+      snapshotting them is still to set up.
 
 ---
 
