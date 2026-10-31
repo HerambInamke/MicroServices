@@ -14,15 +14,35 @@ export class ApiError extends Error {
 let current: Session | null | undefined; // undefined until first read from localStorage
 const listeners = new Set<() => void>();
 
-export function getSession(): Session | null {
-  if (current === undefined) {
-    try {
-      current = JSON.parse(localStorage.getItem(KEY) ?? 'null');
-    } catch {
-      current = null;
-    }
+function stored(): Session | null {
+  try {
+    return JSON.parse(localStorage.getItem(KEY) ?? 'null');
+  } catch {
+    return null;
   }
-  return current ?? null;
+}
+
+export function getSession(): Session | null {
+  if (current === undefined) current = stored();
+  return current;
+}
+
+// Another tab logged in, out, or rotated the tokens: drop the cache so the next read sees it.
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key !== KEY && e.key !== null) return;
+    current = undefined;
+    listeners.forEach((f) => f());
+  });
+}
+
+// The session another tab may have stored since `s` was read, if it differs.
+function newerThan(s: Session): Session | null {
+  const fresh = stored();
+  if (!fresh || fresh.accessToken === s.accessToken) return null;
+  current = fresh;
+  listeners.forEach((f) => f());
+  return fresh;
 }
 
 function setSession(s: Session | null) {
@@ -54,11 +74,15 @@ let refreshing: Promise<Session | null> | null = null;
 
 function refresh(s: Session): Promise<Session | null> {
   refreshing ??= send('POST', '/auth/refresh', { refreshToken: s.refreshToken })
-    .then((t: Tokens) => ({ ...s, ...t }), () => null)
-    .then((next) => {
-      setSession(next);
-      return next;
-    })
+    .then(
+      (t: Tokens) => {
+        const next = { ...s, ...t };
+        setSession(next);
+        return next;
+      },
+      // Lost a race with another tab that rotated the same refresh token: use its session, else log out.
+      () => newerThan(s) ?? (setSession(null), null),
+    )
     .finally(() => {
       refreshing = null;
     });
@@ -71,7 +95,7 @@ export async function api<T>(method: string, path: string, body?: unknown): Prom
     return await send(method, path, body, s?.accessToken);
   } catch (err) {
     if (!(err instanceof ApiError && err.status === 401 && s)) throw err;
-    const next = await refresh(s);
+    const next = newerThan(s) ?? (await refresh(s));
     if (!next) throw err;
     return send(method, path, body, next.accessToken);
   }

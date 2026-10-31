@@ -104,6 +104,20 @@ test('a failed refresh logs the user out and surfaces the 401', async () => {
   expect(seen).toHaveBeenCalled();
 });
 
+test('a stale tab adopts the tokens another tab already rotated instead of refreshing', async () => {
+  const mod = await loggedIn();
+  // Tab A refreshed: localStorage now holds a2/r2, this tab still caches a1/r1.
+  localStorage.setItem('session', JSON.stringify({ accessToken: 'a2', refreshToken: 'r2', user: { id: 'u1', email: 'x@y.z', role: 'retailer' } }));
+  handler = (c) => {
+    if (c.path === '/auth/refresh') return fail(401, 'INVALID_TOKEN'); // r1 was already used by tab A
+    return c.auth === 'Bearer a2' ? ok('fresh') : fail(401, 'UNAUTHORIZED');
+  };
+  expect(await mod.api('GET', '/orders')).toBe('fresh');
+  expect(calls.map((c) => c.path)).toEqual(['/orders', '/orders']);
+  expect(mod.getSession()).toMatchObject({ accessToken: 'a2', refreshToken: 'r2' });
+  expect(localStorage.getItem('session')).not.toBeNull();
+});
+
 test('logout clears the session and revokes the refresh token', async () => {
   const mod = await loggedIn();
   handler = () => ok(null);
