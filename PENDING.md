@@ -67,7 +67,7 @@ Never-ticked "Human review" boxes, for you to look over and tick:
 
 | # | Item | Where | Risk if left |
 |---|---|---|---|
-| D4 | **Ledger replicas.** Handoffs now use an immudb precondition (concurrent writers get 409), so the lock is gone. Left: the outbox relay has no cross-replica lease (add one before running two replicas), and an offer redirected while its accept is being mined leaves that tx unmirrored. | `provenance-ledger/events.go`, `handlers.go` | Low (single instance) |
+| D4 | **Ledger replicas.** Handoffs now use an immudb precondition (concurrent writers get 409), so the lock is gone. Accept claims the offer before going on-chain, so a redirect can't strand a tx. Left: the outbox relay has no cross-replica lease (add one before running two replicas). | `provenance-ledger/events.go` | Low (single instance) |
 | D5 | **No schema migrations** for order-payment (create_all) and media-upload (IF NOT EXISTS). Adopt Alembic / a migration tool at the first schema change. | `order-payment/app.py`, `media-upload/store.go` | Low now |
 | D7 | **Analytics:** if the catalog is unreachable during ingest, the line is filed under category 0 for good. Add a backfill job (#26). | `services/analytics/ingest.py` | Low |
 | D8 | **Weaviate paging** is offset-based, unordered, capped at 10k. Switch to the cursor API for large registries. | `counterfeit-detection/store.py` | Low |

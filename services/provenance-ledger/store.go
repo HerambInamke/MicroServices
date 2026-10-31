@@ -39,6 +39,7 @@ type Offer struct {
 	Role       string    `json:"role"`
 	DataHash   string    `json:"dataHash"` // what the receiver must personal_sign
 	OfferedAt  time.Time `json:"offeredAt"`
+	Accepting  bool      `json:"accepting,omitempty"` // the receiver's signed accept is on its way on-chain
 }
 
 type Event struct {
@@ -63,8 +64,9 @@ type Store interface {
 	Create(ctx context.Context, p Piece, first Event, out Outgoing) error
 	Get(ctx context.Context, id string) (Piece, error)
 	// Update replaces the piece state and, when e is set, appends that history entry and its event (out, required
-	// with e) in the same transaction. It returns ErrConflict when the piece changed since Get returned p.
-	Update(ctx context.Context, p Piece, e *Event, out *Outgoing) error
+	// with e) in the same transaction. It returns ErrConflict when the piece changed since Get returned p, and on
+	// success moves p.Rev to the new transaction.
+	Update(ctx context.Context, p *Piece, e *Event, out *Outgoing) error
 	History(ctx context.Context, id string) ([]Event, error)
 	// Pending lists unsent events, each piece's in history order. Sent removes one after Kafka acknowledged it.
 	Pending(ctx context.Context, limit int) ([]Pending, error)
@@ -113,7 +115,7 @@ func (s *immuStore) Create(ctx context.Context, p Piece, first Event, out Outgoi
 	return err
 }
 
-func (s *immuStore) Update(ctx context.Context, p Piece, e *Event, out *Outgoing) error {
+func (s *immuStore) Update(ctx context.Context, p *Piece, e *Event, out *Outgoing) error {
 	pb, err := json.Marshal(p)
 	if err != nil {
 		return err
@@ -138,11 +140,15 @@ func (s *immuStore) Update(ctx context.Context, p Piece, e *Event, out *Outgoing
 		req.KVs = append(req.KVs, &schema.KeyValue{Key: eventKey(p.ID, e.Index), Value: eb}, &schema.KeyValue{Key: outboxKey(p.ID, e.Index), Value: ob})
 		req.Preconditions = append(req.Preconditions, schema.PreconditionKeyMustNotExist(eventKey(p.ID, e.Index)))
 	}
-	_, err = s.c.SetAll(ctx, req)
+	hdr, err := s.c.SetAll(ctx, req)
 	if err != nil && strings.Contains(err.Error(), "precondition failed") {
 		return ErrConflict
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	p.Rev = hdr.Id
+	return nil
 }
 
 func (s *immuStore) Pending(ctx context.Context, limit int) ([]Pending, error) {

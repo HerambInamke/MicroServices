@@ -211,6 +211,10 @@ func (s *Server) offer(w http.ResponseWriter, r *http.Request, userID, role stri
 		fail(w, http.StatusForbidden, "NOT_OWNER", "only the current owner can hand this piece off")
 		return
 	}
+	if p.Pending != nil && p.Pending.Accepting {
+		fail(w, http.StatusConflict, "HANDOFF_IN_PROGRESS", "the recipient is accepting the current offer")
+		return
+	}
 	to, err := s.users.Get(r.Context(), userID, role, req.ToUserID)
 	if errors.Is(err, ErrNotFound) {
 		fail(w, http.StatusUnprocessableEntity, "UNKNOWN_RECIPIENT", "recipient does not exist")
@@ -233,7 +237,7 @@ func (s *Server) offer(w http.ResponseWriter, r *http.Request, userID, role stri
 	h := handoffHash(chainPieceID(p.ID), prev, userID, to.ID, to.Role)
 	// A new offer replaces any earlier one, so the owner can redirect an unaccepted handoff.
 	p.Pending = &Offer{FromUserID: userID, ToUserID: to.ID, Role: to.Role, DataHash: common.Hash(h).Hex(), OfferedAt: time.Now().UTC()}
-	err = s.store.Update(r.Context(), p, nil, nil)
+	err = s.store.Update(r.Context(), &p, nil, nil)
 	if errors.Is(err, ErrConflict) {
 		fail(w, http.StatusConflict, "CONCURRENT_CHANGE", "the piece changed while handing it off; reload it and try again")
 		return
@@ -295,9 +299,25 @@ func (s *Server) accept(w http.ResponseWriter, r *http.Request, userID, role str
 	// Detached from the request: once a tx is sent it must be mirrored even if the client goes away.
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
+	// Claim the offer before going on-chain: a concurrent redirect or second accept then fails here, with nothing
+	// sent. A retry after a crash re-claims it; Record returns the existing tx if this one was already mined.
+	offer.Accepting = true
+	err = s.store.Update(ctx, &p, nil, nil)
+	if errors.Is(err, ErrConflict) {
+		fail(w, http.StatusConflict, "CONCURRENT_CHANGE", "the piece changed while accepting; reload it")
+		return
+	}
+	if err != nil {
+		internal(w, err)
+		return
+	}
 	txHash, err := s.chain.Record(ctx, chainPieceID(p.ID), offer.Role, dataHash, sig)
 	if err != nil {
 		log.Printf("chain record for %s failed: %v", p.ID, err)
+		offer.Accepting = false // let the owner redirect again
+		if err := s.store.Update(ctx, &p, nil, nil); err != nil {
+			log.Printf("clearing the accept claim on %s failed: %v", p.ID, err)
+		}
 		fail(w, http.StatusBadGateway, "CHAIN_ERROR", "could not record the handoff on-chain")
 		return
 	}
@@ -310,11 +330,9 @@ func (s *Server) accept(w http.ResponseWriter, r *http.Request, userID, role str
 		"pieceId": p.ID, "index": e.Index, "fromUserId": offer.FromUserID, "toUserId": userID, "role": e.Role,
 		"actorAddress": e.ActorAddress, "dataHash": e.DataHash, "txHash": txHash, "signedAt": e.Timestamp,
 	})
-	err = s.store.Update(ctx, p, &e, &out)
+	err = s.store.Update(ctx, &p, &e, &out)
 	if errors.Is(err, ErrConflict) {
-		// Usually a concurrent accept of the same offer that already mirrored this tx.
-		// shortcut: if the owner redirected the offer while this tx was mined, the tx stays unmirrored and verify
-		// reports it; mark the offer as being accepted before going on-chain if redirects become common.
+		// Only a retried accept re-claiming the offer gets here; it finds this tx via Record and mirrors it.
 		log.Printf("handoff for %s is on-chain in %s but the piece changed meanwhile", p.ID, txHash)
 		fail(w, http.StatusConflict, "CONCURRENT_CHANGE", "the piece changed while accepting; reload it")
 		return

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/google/uuid"
 )
 
@@ -80,7 +82,8 @@ func (f *fakeStore) Get(_ context.Context, id string) (Piece, error) {
 	return p, nil
 }
 
-func (f *fakeStore) Update(_ context.Context, p Piece, e *Event, out *Outgoing) error {
+func (f *fakeStore) Update(_ context.Context, pp *Piece, e *Event, out *Outgoing) error {
+	p := *pp
 	if _, ok := f.pieces[p.ID]; !ok {
 		return ErrNotFound
 	}
@@ -251,10 +254,10 @@ func TestImmuStore(t *testing.T) {
 	}
 	p.OwnerID, p.Rev = "d1", got.Rev
 	handoff := newOutgoing("piece.handoff.signed", "PieceHandoffSigned", p.ID, map[string]any{"pieceId": p.ID})
-	if err := st.Update(ctx, p, &Event{Index: 1, Type: "handoff", UserID: "d1"}, &handoff); err != nil {
+	if err := st.Update(ctx, &p, &Event{Index: 1, Type: "handoff", UserID: "d1"}, &handoff); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.Update(ctx, p, &Event{Index: 1, Type: "handoff", UserID: "x"}, &handoff); err == nil {
+	if err := st.Update(ctx, &p, &Event{Index: 1, Type: "handoff", UserID: "x"}, &handoff); err == nil {
 		t.Fatal("an event index must not be written twice")
 	}
 	// The outbox holds this piece's two events in history order (other runs may have left their own).
@@ -289,7 +292,7 @@ func TestImmuStore(t *testing.T) {
 	if evs, err := st.History(ctx, p.ID); err != nil || len(evs) != 2 || evs[0].Type != "registered" || evs[1].UserID != "d1" {
 		t.Fatalf("history: %+v (%v)", evs, err)
 	}
-	if err := st.Update(ctx, Piece{ID: uuid.NewString()}, nil, nil); err == nil {
+	if err := st.Update(ctx, &Piece{ID: uuid.NewString()}, nil, nil); err == nil {
 		t.Fatal("updating a missing piece must fail")
 	}
 	if _, err := st.Get(ctx, uuid.NewString()); !errors.Is(err, ErrNotFound) {
@@ -310,8 +313,27 @@ func (b barrierStore) Get(ctx context.Context, id string) (Piece, error) {
 	return p, err
 }
 
-// Two replicas handing off the same piece at once: exactly one commits, the other gets 409. Needs TEST_IMMUDB_HOST.
-func TestConcurrentHandoffsOneWins(t *testing.T) {
+// hookChain runs before ahead of every Record, i.e. after accept has claimed the offer.
+type hookChain struct {
+	Chain
+	before func()
+}
+
+func (h hookChain) Record(ctx context.Context, pieceID [32]byte, role string, dataHash [32]byte, sig []byte) (string, error) {
+	h.before()
+	return h.Chain.Record(ctx, pieceID, role, dataHash, sig)
+}
+
+// immuHandoff is a piece registered by w1 in a real immudb (TEST_IMMUDB_HOST), with a Server on top of it.
+type immuHandoff struct {
+	st      *immuStore
+	s       *Server
+	pieceID string
+	dyeKey  *ecdsa.PrivateKey
+}
+
+func newImmuHandoff(t *testing.T) *immuHandoff {
+	t.Helper()
 	host := os.Getenv("TEST_IMMUDB_HOST")
 	if host == "" {
 		t.Skip("TEST_IMMUDB_HOST not set")
@@ -325,21 +347,29 @@ func TestConcurrentHandoffsOneWins(t *testing.T) {
 	if err := st.Create(ctx, p, Event{Type: "registered", Role: "weaver", UserID: "w1"}, newOutgoing("piece.registered", "PieceRegistered", p.ID, map[string]any{})); err != nil {
 		t.Fatal(err)
 	}
-	defer st.Sent(ctx, outboxKey(p.ID, 0))
+	t.Cleanup(func() { st.Sent(ctx, outboxKey(p.ID, 0)); st.Sent(ctx, outboxKey(p.ID, 1)) })
+	key, _ := crypto.GenerateKey()
+	users := fakeUsers{
+		"w1": {ID: "w1", Role: "weaver"},
+		"d1": {ID: "d1", Role: "dye-house", WalletAddress: crypto.PubkeyToAddress(key.PublicKey).Hex()},
+		"h1": {ID: "h1", Role: "wholesaler"},
+	}
+	chain := &fakeChain{recorded: map[[32]byte]string{}, pieces: map[[32]byte][]ChainEvent{}}
+	return &immuHandoff{st: st, s: &Server{store: st, users: users, chain: chain}, pieceID: p.ID, dyeKey: key}
+}
 
+// race sends both requests through their own Server (one per replica, sharing immudb) once both have read the piece,
+// and returns the status codes sorted.
+func (f *immuHandoff) race(reqs ...*http.Request) []int {
 	read := &sync.WaitGroup{}
-	read.Add(2)
-	users := fakeUsers{"d1": {ID: "d1", Role: "dye-house"}, "h1": {ID: "h1", Role: "wholesaler"}}
+	read.Add(len(reqs))
 	var wg sync.WaitGroup
-	codes := make([]int, 2)
-	for i, to := range []string{"d1", "h1"} {
+	codes := make([]int, len(reqs))
+	for i, req := range reqs {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			s := &Server{store: barrierStore{st, read}, users: users} // one Server per replica, sharing immudb
-			req := httptest.NewRequest("POST", "/pieces/"+p.ID+"/handoffs", strings.NewReader(`{"toUserId":"`+to+`"}`))
-			req.Header.Set("X-User-Id", "w1")
-			req.Header.Set("X-User-Role", "weaver")
+			s := &Server{store: barrierStore{f.st, read}, users: f.s.users, chain: f.s.chain}
 			rec := httptest.NewRecorder()
 			s.routes().ServeHTTP(rec, req)
 			codes[i] = rec.Code
@@ -347,10 +377,67 @@ func TestConcurrentHandoffsOneWins(t *testing.T) {
 	}
 	wg.Wait()
 	sort.Ints(codes)
+	return codes
+}
+
+func authedReq(path, userID, role, body string) *http.Request {
+	req := httptest.NewRequest("POST", path, strings.NewReader(body))
+	req.Header.Set("X-User-Id", userID)
+	req.Header.Set("X-User-Role", role)
+	return req
+}
+
+// Two replicas offering the same piece at once: exactly one commits, the other gets 409.
+func TestConcurrentHandoffsOneWins(t *testing.T) {
+	f := newImmuHandoff(t)
+	path := "/pieces/" + f.pieceID + "/handoffs"
+	codes := f.race(authedReq(path, "w1", "weaver", `{"toUserId":"d1"}`), authedReq(path, "w1", "weaver", `{"toUserId":"h1"}`))
 	if codes[0] != http.StatusCreated || codes[1] != http.StatusConflict {
 		t.Fatalf("want one 201 and one 409, got %v", codes)
 	}
-	if got, err := st.Get(ctx, p.ID); err != nil || got.Pending == nil {
+	if got, err := f.st.Get(context.Background(), f.pieceID); err != nil || got.Pending == nil {
 		t.Fatalf("the winning offer was not stored: %+v (%v)", got, err)
+	}
+}
+
+func (f *immuHandoff) offer(t *testing.T, to string) string {
+	t.Helper()
+	code, env := do(t, f.s, "POST", "/pieces/"+f.pieceID+"/handoffs", "w1", "weaver", `{"toUserId":"`+to+`"}`)
+	if code != http.StatusCreated {
+		t.Fatalf("offer: want 201, got %d: %v", code, env)
+	}
+	return env["data"].(map[string]any)["pendingHandoff"].(map[string]any)["dataHash"].(string)
+}
+
+// Two replicas accepting the same offer at once: one claims it and mirrors the handoff, the other gets 409.
+func TestConcurrentAcceptsOneWins(t *testing.T) {
+	f := newImmuHandoff(t)
+	body := `{"signature":"` + personalSign(t, f.dyeKey, f.offer(t, "d1")) + `"}`
+	path := "/pieces/" + f.pieceID + "/handoffs/accept"
+	codes := f.race(authedReq(path, "d1", "dye-house", body), authedReq(path, "d1", "dye-house", body))
+	if codes[0] != http.StatusOK || codes[1] != http.StatusConflict {
+		t.Fatalf("want one 200 and one 409, got %v", codes)
+	}
+	if evs, err := f.st.History(context.Background(), f.pieceID); err != nil || len(evs) != 2 {
+		t.Fatalf("want the handoff mirrored once: %+v (%v)", evs, err)
+	}
+}
+
+// Once accept has claimed the offer, the owner cannot redirect it while the tx is mined.
+func TestRedirectDuringAcceptConflicts(t *testing.T) {
+	f := newImmuHandoff(t)
+	body := `{"signature":"` + personalSign(t, f.dyeKey, f.offer(t, "d1")) + `"}`
+	redirect := 0
+	f.s.chain = hookChain{Chain: f.s.chain, before: func() {
+		redirect, _ = do(t, f.s, "POST", "/pieces/"+f.pieceID+"/handoffs", "w1", "weaver", `{"toUserId":"h1"}`)
+	}}
+	if code, env := do(t, f.s, "POST", "/pieces/"+f.pieceID+"/handoffs/accept", "d1", "dye-house", body); code != http.StatusOK {
+		t.Fatalf("accept: want 200, got %d: %v", code, env)
+	}
+	if redirect != http.StatusConflict {
+		t.Fatalf("redirect during accept: want 409, got %d", redirect)
+	}
+	if got, err := f.st.Get(context.Background(), f.pieceID); err != nil || got.OwnerID != "d1" || got.Pending != nil {
+		t.Fatalf("handoff not mirrored: %+v (%v)", got, err)
 	}
 }
