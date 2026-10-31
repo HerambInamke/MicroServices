@@ -223,6 +223,7 @@ def test_accepted_offer_sets_line_price_once(ctx):
     assert Decimal(str(order["total"])) == Decimal("954.97")  # 10 x 80.50 + 3 x 49.99
     assert ctx["outbox"].events[0][1]["payload"]["total"] == "954.97"
 
+    inventory.stock[1] = 0  # reuse is refused as such, not as out of stock
     res = place(c, [{"productId": 1, "qty": 10, "offerId": "o1"}])
     assert (res.status_code, code(res)) == (409, "OFFER_ALREADY_USED")
     assert len(inventory.reservations) == 1  # the refused order's stock was released
