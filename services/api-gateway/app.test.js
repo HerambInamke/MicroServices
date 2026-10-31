@@ -132,6 +132,9 @@ test('internal inventory endpoints are not routed, even with a token', async () 
     const r = await fetch(`${base}${path}`, { method: 'POST', headers: { authorization: `Bearer ${access}` } });
     assert.equal(r.status, 404, path);
   }
+  for (const path of ['/api/v1/chat/offers/abc', '/api/v1/chat/offers/abc/', '/api/v1/chat/offers']) {
+    assert.equal((await get(path, { authorization: `Bearer ${access}` })).status, 404, path);
+  }
 });
 
 // fetch() normalises dot segments client-side, so send the raw path.

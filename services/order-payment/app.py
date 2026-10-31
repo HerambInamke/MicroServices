@@ -3,7 +3,7 @@ import hmac
 import json
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import uuid4
@@ -16,10 +16,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from clients import CatalogError, InventoryError, PaymentProviderError
+from clients import CatalogError, ChatError, InventoryError, PaymentProviderError
 from models import Order, OrderItem, Payment
 from outbox import enqueue
 
@@ -82,6 +83,7 @@ def order_view(o: Order) -> dict:
 class OrderLine(BaseModel):
     productId: int = Field(gt=0)
     qty: int = Field(gt=0, le=1_000_000)
+    offerId: str | None = Field(None, min_length=1, max_length=64)
 
 
 class PlaceOrder(BaseModel):
@@ -92,9 +94,9 @@ class StatusChange(BaseModel):
     status: Literal["confirmed", "cancelled", "shipped", "delivered"]
 
 
-def create_app(session_factory: sessionmaker, catalog, razorpay=None, webhook_secret: str = "", *, inventory) -> FastAPI:
+def create_app(session_factory: sessionmaker, catalog, razorpay=None, webhook_secret: str = "", *, inventory, chat) -> FastAPI:
     """razorpay/webhook_secret may be absent: payment endpoints then answer 503 instead of failing.
-    inventory is required: an order is never placed without a stock decision.
+    inventory is required: an order is never placed without a stock decision. chat reads accepted offers.
     Events go to the outbox in the same transaction as the change (see outbox.py)."""
     app = FastAPI(title="Order & Payment Service", description="Provenance Order/Payment API")
 
@@ -152,14 +154,32 @@ def create_app(session_factory: sessionmaker, catalog, razorpay=None, webhook_se
         wholesalers = {q.wholesaler_id for q in quotes}
         if len(wholesalers) != 1:
             raise ApiError(422, "MIXED_WHOLESALERS", "all items in an order must come from one wholesaler")
+        wholesaler_id = wholesalers.pop()
+
+        # A line with an accepted chat offer is priced at the offer instead of the catalog tier.
+        for i, line in enumerate(req.items):
+            if line.offerId is None:
+                continue
+            try:
+                offer = chat.offer(line.offerId)
+            except ChatError as e:
+                raise ApiError(e.status, e.code, e.message) from e
+            if offer.retailer_id != who.id:
+                raise ApiError(403, "FORBIDDEN", "this offer was made to another buyer")
+            if offer.status != "accepted":
+                raise ApiError(409, "OFFER_NOT_ACCEPTED", "only an accepted offer can price an order")
+            if (offer.wholesaler_id, offer.product_id, offer.qty) != (wholesaler_id, str(line.productId), line.qty):
+                raise ApiError(422, "OFFER_MISMATCH", "the offer is for a different seller, product or quantity")
+            quotes[i] = replace(quotes[i], unit_price=offer.unit_price, total=offer.unit_price * line.qty)
 
         order = Order(
             id=str(uuid4()),  # inventory keys the reservation by it, before the row exists
             retailer_id=who.id,
-            wholesaler_id=wholesalers.pop(),
+            wholesaler_id=wholesaler_id,
             status="placed",
             total=sum((q.total for q in quotes), Decimal("0")),
-            items=[OrderItem(product_id=q.product_id, qty=q.qty, unit_price=q.unit_price) for q in quotes],
+            items=[OrderItem(product_id=q.product_id, qty=q.qty, unit_price=q.unit_price, offer_id=line.offerId)
+                   for q, line in zip(quotes, req.items)],
         )
         try:
             inventory.reserve(order.id, [(q.product_id, q.qty) for q in quotes])
@@ -172,6 +192,10 @@ def create_app(session_factory: sessionmaker, catalog, razorpay=None, webhook_se
                 "items": [{"productId": q.product_id, "qty": q.qty, "unitPrice": str(q.unit_price)} for q in quotes]
             })
             session.commit()
+        except IntegrityError as e:
+            # The UNIQUE offer_id is the only constraint a new order can break: the offer already priced an order.
+            inventory.release(order.id)
+            raise ApiError(409, "OFFER_ALREADY_USED", "this offer has already been used for an order") from e
         except Exception:
             inventory.release(order.id)
             raise

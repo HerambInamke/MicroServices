@@ -199,6 +199,16 @@ function createApp({ users, outbox, broadcast }) {
     ok(res, 201, next);
   }));
 
+  // Internal: order-payment reads an offer on the compose network to price an order; the gateway does not route it.
+  // Identity headers mean the request came in from outside, so refuse it even if a gateway rule ever lets it through.
+  app.get('/chat/offers/:msgId', wrap(async (req, res) => {
+    if (req.get('x-user-id') || req.get('x-user-role')) throw new ApiError(403, 'FORBIDDEN', 'internal endpoint');
+    const m = mongoose.isValidObjectId(req.params.msgId) ? await Message.findOne({ _id: req.params.msgId, kind: 'offer' }) : null;
+    if (!m) throw new ApiError(404, 'OFFER_NOT_FOUND', 'offer not found');
+    const thread = await Thread.findById(m.threadId);
+    ok(res, 200, { id: m._id.toString(), ...messageView(m).offer, wholesalerId: thread.wholesalerId, retailerId: thread.retailerId });
+  }));
+
   app.use((req, res) => fail(res, 404, 'NOT_FOUND', 'no such route'));
 
   // eslint-disable-next-line no-unused-vars

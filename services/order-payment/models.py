@@ -41,6 +41,8 @@ class OrderItem(Base):
     product_id: Mapped[int] = mapped_column(BigInteger)
     qty: Mapped[int] = mapped_column(Integer)
     unit_price: Mapped[Decimal] = mapped_column(Numeric(12, 2))
+    # The accepted chat offer that set unit_price; unique, so an offer prices at most one order line.
+    offer_id: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)
 
 
 class Payment(Base):

@@ -32,9 +32,9 @@ Rust and Solidity, each owning its own datastore and talking over HTTP (through 
 1. Wholesalers list products with MOQ and price tiers (catalog); images go to MinIO (media).
 2. Retailers search (Elasticsearch), chat with a wholesaler, and negotiate with offers
    (offer → counter → accept).
-3. A retailer places a bulk order; stock is reserved atomically (inventory-sync); the wholesaler confirms;
-   the retailer pays with Razorpay; a verified Razorpay webhook marks it paid; the wholesaler ships and
-   delivers.
+3. A retailer places a bulk order (a line can cite an accepted offer to use its price, once); stock is
+   reserved atomically (inventory-sync); the wholesaler confirms; the retailer pays with Razorpay; a verified
+   Razorpay webhook marks it paid; the wholesaler ships and delivers.
 4. Every step emits a Kafka event. Notifications turns events into a per-user inbox with a live
    WebSocket; search and analytics index them; reviews records delivered/cancelled outcomes.
 5. After delivery the retailer can review the order once; the wholesaler's public **trust score** blends

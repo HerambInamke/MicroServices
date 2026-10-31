@@ -80,7 +80,6 @@ Never-ticked "Human review" boxes, for you to look over and tick:
 
 ## E. Future features (agreed out of scope so far)
 
-- Negotiated (accepted-offer) prices flowing into orders; today orders always use catalog prices.
 - Push/device notifications (`POST /notifications/subscribe`); there is no push provider yet.
 - A frontend (web/mobile). Ask where to put it before scaffolding.
 - Wholesaler replies to reviews (decided "no" for now).
