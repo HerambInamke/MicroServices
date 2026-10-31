@@ -40,6 +40,13 @@ class ClickHouseStore:
         if rows:
             self.client.insert(self.table, [[r[c] for c in COLUMNS] for r in rows], column_names=COLUMNS)
 
+    def uncategorized(self) -> list[dict]:
+        """Order lines filed under category 0 because the catalog had no answer at ingest."""
+        res = self._query(
+            f"SELECT {', '.join(COLUMNS)} FROM {{t}} FINAL WHERE event_type = 'OrderPlaced' AND category_id = 0 AND product_id != 0", {}
+        )
+        return [dict(zip(COLUMNS, r)) for r in res]
+
     def _query(self, sql: str, params: dict) -> list[tuple]:
         # str.replace, not format: ClickHouse's {name:Type} parameters use braces too.
         return self.client.query(sql.replace("{t}", self.table), parameters=params).result_rows

@@ -57,10 +57,18 @@ class CategoryLookup:
                 res.raise_for_status()
                 self._cache[product_id] = int(res.json()["data"].get("categoryId") or 0)
             except (httpx.HTTPError, ValueError, KeyError):
-                # shortcut: an unreachable catalog files the line under category 0 for good; add a backfill job if trends need to be exact.
+                # The line is filed under category 0 until an admin runs backfill().
                 log.warning("no category for product %s", product_id)
                 return 0
         return self._cache[product_id]
+
+
+def backfill(store, category_of) -> int:
+    """Re-inserts order lines stuck at category 0 with their real category; the same (event_id, line) replaces the old row.
+    Products the catalog still can't place (deleted, or catalog down again) stay at 0 until the next run."""
+    fixed = [r | {"category_id": c} for r in store.uncategorized() if (c := category_of(r["product_id"]))]
+    store.insert(fixed)
+    return len(fixed)
 
 
 def run(store, category_of, brokers: str) -> None:

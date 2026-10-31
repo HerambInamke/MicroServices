@@ -5,11 +5,12 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from app import create_app
-from ingest import TOPICS, rows
+from ingest import TOPICS, CategoryLookup, backfill, rows
 
 
 def event(kind, payload, days_ago=0):
@@ -61,7 +62,7 @@ class FakeStore:
 
 
 def test_summary_is_owner_or_admin_only():
-    client = TestClient(create_app(FakeStore()))
+    client = TestClient(create_app(FakeStore(), lambda _: 0))
     url = "/analytics/seller/w1/summary"
     assert client.get(url).status_code == 401
     assert client.get(url, headers={"X-User-Id": "w2", "X-User-Role": "wholesaler"}).status_code == 403
@@ -72,11 +73,43 @@ def test_summary_is_owner_or_admin_only():
 
 
 def test_trends_are_public_and_validated():
-    client = TestClient(create_app(FakeStore()))
+    client = TestClient(create_app(FakeStore(), lambda _: 0))
     assert client.get("/analytics/trends").json()["data"] == {"period": "90d", "weeks": [{"categoryId": None, "days": 90}]}
     assert client.get("/analytics/trends", params={"category": 2, "period": "365d"}).json()["data"]["weeks"][0] == {"categoryId": 2, "days": 365}
     assert client.get("/analytics/trends", params={"period": "7d"}).status_code == 400
     assert client.get("/analytics/trends", params={"category": 0}).status_code == 400
+
+
+class BackfillStore:
+    def __init__(self, lines):
+        self.lines, self.inserted = lines, []
+
+    def uncategorized(self):
+        return self.lines
+
+    def insert(self, rows):
+        self.inserted += rows
+
+
+def fake_catalog(req: httpx.Request) -> httpx.Response:
+    pid = int(req.url.path.rsplit("/", 1)[1])
+    if pid not in CATEGORIES:
+        return httpx.Response(404, json={"data": None, "error": {"code": "NOT_FOUND"}})
+    return httpx.Response(200, json={"data": {"id": pid, "categoryId": CATEGORIES[pid]}})
+
+
+def test_backfill_refiles_category_zero_lines_and_leaves_deleted_products():
+    lookup = CategoryLookup("http://catalog")
+    lookup._http = httpx.Client(base_url="http://catalog", transport=httpx.MockTransport(fake_catalog))
+    lines = rows(placed("o1", "w1", [{"productId": 1, "qty": 1, "unitPrice": 1}, {"productId": 9, "qty": 1, "unitPrice": 1}]), lambda _: 0)
+    store = BackfillStore(lines)
+    client = TestClient(create_app(store, lookup))
+    assert client.post("/analytics/backfill").status_code == 401
+    assert client.post("/analytics/backfill", headers={"X-User-Id": "w1", "X-User-Role": "wholesaler"}).status_code == 403
+    res = client.post("/analytics/backfill", headers={"X-User-Id": "a1", "X-User-Role": "admin"})
+    assert res.json()["data"] == {"updated": 1}
+    # Product 1 gets its real category under the same (event_id, line); deleted product 9 is not re-inserted, so it stays 0.
+    assert [(r["event_id"], r["line"], r["product_id"], r["category_id"]) for r in store.inserted] == [(lines[0]["event_id"], 0, 1, 10)]
 
 
 @pytest.mark.skipif(not os.getenv("TEST_CLICKHOUSE_URL"), reason="TEST_CLICKHOUSE_URL not set")
@@ -106,5 +139,23 @@ def test_real_store_summary_and_trends():
         weeks = store.trends(None, 30)
         assert sum(w["qty"] for w in weeks if w["categoryId"] == 10) == 15
         assert {w["categoryId"] for w in store.trends(20, 30)} == {20}
+    finally:
+        store.client.command(f"DROP TABLE IF EXISTS {store.table}")
+
+
+@pytest.mark.skipif(not os.getenv("TEST_CLICKHOUSE_URL"), reason="TEST_CLICKHOUSE_URL not set")
+def test_real_store_backfill_replaces_category_zero_rows():
+    from store import ClickHouseStore
+
+    store = ClickHouseStore.connect(os.environ["TEST_CLICKHOUSE_URL"], table=f"events_test_{uuid.uuid4().hex[:8]}")
+    try:
+        store.ensure()
+        # Catalog down at ingest: both lines land in category 0; product 9 was since deleted.
+        store.insert(rows(placed("o1", "w1", [{"productId": 1, "qty": 4, "unitPrice": "1"}, {"productId": 9, "qty": 2, "unitPrice": "1"}]), lambda _: 0))
+        assert len(store.uncategorized()) == 2
+
+        assert backfill(store, lambda pid: CATEGORIES.get(pid, 0)) == 1
+        assert [(r["product_id"], r["category_id"]) for r in store.uncategorized()] == [(9, 0)]
+        assert {w["categoryId"]: w["qty"] for w in store.trends(None, 30)} == {0: 2, 10: 4}
     finally:
         store.client.command(f"DROP TABLE IF EXISTS {store.table}")
