@@ -45,3 +45,7 @@ Thumbs.db
 contracts/out/
 contracts/cache/
 contracts/lib/
+
+# AI agent skills are local tooling, not project code
+.agents/
+skills-lock.json
