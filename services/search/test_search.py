@@ -97,6 +97,7 @@ def test_search_filters_pages_and_validates(ctx):
 
 
 def test_consumer_handles_product_events():
+    assert "product.changed" in consumer.TOPICS  # one topic keyed by product id keeps a product's events in order
     index = FakeIndex()
     payload = {"productId": 7, "wholesalerId": "w1", "name": "Banarasi", "description": None, "categoryId": 1, "basePrice": 99.5, "moq": 1}
     consumer.handle(index, {"eventType": "ProductCreated", "payload": payload})
