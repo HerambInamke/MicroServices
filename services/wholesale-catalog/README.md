@@ -17,7 +17,8 @@ source of truth for prices: order-payment asks it for a quote, so a client can n
 
 ## Events
 
-Publishes `product.created`, `product.updated`, `product.deleted`, which search and analytics consume.
+Publishes `ProductCreated`, `ProductUpdated` and `ProductDeleted` on the `product.changed` topic keyed by product id
+(one topic keeps a product's events in order), which search and analytics consume.
 
 Events go through a transactional outbox: `EventPublisher` writes each one to the `outbox` table inside the product
 change's transaction, and `OutboxRelay` sends them to Kafka every second, in order, deleting each once acknowledged.
