@@ -2,11 +2,14 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import uuid4
 
+from alembic import command
+from alembic.config import Config
 from fastapi import Depends, FastAPI, Header, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
@@ -17,7 +20,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from clients import CatalogError, InventoryError, PaymentProviderError
-from models import Base, Order, OrderItem, Payment
+from models import Order, OrderItem, Payment
 from outbox import enqueue
 
 log = logging.getLogger("order-payment")
@@ -308,5 +311,8 @@ def create_app(session_factory: sessionmaker, catalog, razorpay=None, webhook_se
 
 
 def init_db(engine) -> None:
-    # shortcut: tables are created at startup, not via migrations; adopt Alembic when the first schema change lands.
-    Base.metadata.create_all(engine)
+    """Applies pending Alembic migrations (migrations/versions) on start."""
+    cfg = Config(os.path.join(os.path.dirname(os.path.abspath(__file__)), "alembic.ini"))
+    with engine.begin() as conn:
+        cfg.attributes["connection"] = conn
+        command.upgrade(cfg, "head")

@@ -88,7 +88,7 @@ Each service folder has its own `README.md` with endpoints, events, configuratio
 | Topic | Producer | Consumers |
 |---|---|---|
 | `order.placed`, `order.status.changed`, `payment.completed` | order-payment | notifications, analytics, reviews (`status.changed`) |
-| `product.created/updated/deleted` | wholesale-catalog | search |
+| `product.changed` (keyed by product id) | wholesale-catalog | search, analytics |
 | `piece.registered`, `piece.handoff.signed` | provenance-ledger | notifications (handoff) |
 | `chat.message.sent`, `chat.offer.updated` | chat | notifications |
 

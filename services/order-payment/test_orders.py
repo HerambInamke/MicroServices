@@ -8,12 +8,14 @@ from decimal import Decimal
 
 import psycopg
 import pytest
+from alembic.autogenerate import compare_metadata
+from alembic.migration import MigrationContext
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
-from app import create_app
+from app import create_app, init_db
 from clients import CatalogError, InventoryError, PaymentProviderError, Quote
 from models import Base, OutboxEvent
 from outbox import RELAY_LOCK, relay_once
@@ -373,3 +375,25 @@ def test_errors_use_envelope(ctx):
     res = ctx["client"].get("/nope")
     assert res.status_code == 404
     assert res.json() == {"data": None, "error": {"code": "NOT_FOUND", "message": "Not Found"}, "meta": {}}
+
+
+def reset_schema(engine):
+    Base.metadata.drop_all(engine)
+    with engine.begin() as conn:
+        conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+
+
+def test_migrations_match_models(engine):
+    reset_schema(engine)
+    init_db(engine)
+    init_db(engine)  # a second start is a no-op
+    with engine.connect() as conn:
+        assert compare_metadata(MigrationContext.configure(conn), Base.metadata) == []
+
+
+def test_migrations_adopt_create_all_database(engine):
+    reset_schema(engine)
+    Base.metadata.create_all(engine)  # a database from before migrations
+    init_db(engine)
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0001"
