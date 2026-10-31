@@ -167,6 +167,24 @@ test('offers: only the other party responds, once; counters chain', async () => 
   assert.equal(events[2].payload.status, 'accepted');
 });
 
+test('internal offer read: returns the offer with the thread parties, refuses identity headers', async () => {
+  const id = await thread('r1', 'w2');
+  const offer = (await call('POST', `/chat/threads/${id}/offers`, 'w2', { productId: '7', qty: 5, unitPrice: 99.5 })).body.data;
+  await call('POST', `/chat/threads/${id}/offers/${offer.id}/respond`, 'r1', { action: 'accept' });
+
+  let r = await call('GET', `/chat/offers/${offer.id}`);
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.data, { id: offer.id, productId: '7', qty: 5, unitPrice: 99.5, status: 'accepted', respondsTo: null, wholesalerId: 'w2', retailerId: 'r1' });
+
+  assert.equal((await call('GET', `/chat/offers/${offer.id}`, 'r1')).status, 403);
+  const text = (await call('POST', `/chat/threads/${id}/messages`, 'r1', { text: 'hi' })).body.data;
+  for (const bad of [text.id, 'nope', new mongoose.Types.ObjectId().toString()]) {
+    r = await call('GET', `/chat/offers/${bad}`);
+    assert.equal(r.status, 404, bad);
+    assert.equal(r.body.error.code, 'OFFER_NOT_FOUND');
+  }
+});
+
 test('a counter that fails to post leaves the original offer open', async () => {
   const id = await thread('r1', 'w1');
   const offer = (await call('POST', `/chat/threads/${id}/offers`, 'r1', { productId: 'p9', qty: 1, unitPrice: 10 })).body.data;

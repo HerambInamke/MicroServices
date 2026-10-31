@@ -31,7 +31,7 @@ const WS_ROUTES = [
 ];
 
 // Service-to-service endpoints that must never be reachable from outside.
-const INTERNAL = [/^\/inventory\/(reserve|release)\/?$/];
+const INTERNAL = [/^\/inventory\/(reserve|release)\/?$/, /^\/chat\/offers(\/|$)/];
 
 // Routes reachable without a token. Everything else needs a valid access token.
 const PUBLIC = [

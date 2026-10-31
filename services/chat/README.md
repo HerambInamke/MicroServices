@@ -17,8 +17,10 @@ published to `chat:{threadId}` and fanned out to the thread's open sockets.
 | `POST /chat/threads/:id/offers` `{productId, qty, unitPrice}` | participants |
 | `POST /chat/threads/:id/offers/:msgId/respond` `{action: accept\|decline\|counter, qty?, unitPrice?}` | the participant who did not make the offer, while it is open (409 `OFFER_NOT_OPEN` otherwise) |
 | `GET /ws/chat/:threadId` (WebSocket) | participants |
+| `GET /chat/offers/:msgId` → `{id, productId, qty, unitPrice, status, respondsTo, wholesalerId, retailerId}` | internal: order-payment only. Blocked at the gateway, and 403 if identity headers are present |
 
-Accepting an offer only records the agreement. The order is still placed through `POST /orders` at catalog prices.
+Accepting an offer records the agreement. The retailer then places the order through `POST /orders` with the offer's
+id on the line, and order-payment prices that line at the offer (once per offer).
 
 ## Events
 

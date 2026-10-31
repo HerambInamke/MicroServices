@@ -15,7 +15,7 @@ path. It also rate-limits per IP, proxies WebSocket upgrades, and reports aggreg
 `/reviews`, `/trust-score` → reviews.
 
 - `PUBLIC` lists the routes that work without a token. Every other route needs `Authorization: Bearer <accessToken>`.
-- `INTERNAL` (`/inventory/reserve|release`) is never routed.
+- `INTERNAL` (`/inventory/reserve|release`, `/chat/offers/…`) is never routed.
 - Paths that change when normalised (`..`, `%2e%2e`, backslashes) get 404, so they cannot slip past either list.
 - WebSockets: `/api/v1/ws/notifications` and `/api/v1/ws/chat/:threadId`. The token comes from the header or
   `?access_token=`, and is stripped before the request is forwarded.

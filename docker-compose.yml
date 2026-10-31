@@ -228,6 +228,7 @@ services:
       - KAFKA_BROKERS=kafka:9092
       - CATALOG_URL=http://wholesale-catalog:8083
       - INVENTORY_URL=http://inventory-sync:8090
+      - CHAT_URL=http://chat:8093
       # Razorpay test-mode credentials; payments return 503 until these are set (see .env.example).
       - RAZORPAY_KEY_ID=${RAZORPAY_KEY_ID:-}
       - RAZORPAY_KEY_SECRET=${RAZORPAY_KEY_SECRET:-}

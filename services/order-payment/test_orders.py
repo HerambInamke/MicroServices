@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 
 import psycopg
@@ -16,7 +17,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 from app import create_app, init_db
-from clients import CatalogError, InventoryError, PaymentProviderError, Quote
+from clients import CatalogError, ChatError, InventoryError, Offer, PaymentProviderError, Quote
 from models import Base, OutboxEvent
 from outbox import RELAY_LOCK, relay_once
 
@@ -60,6 +61,20 @@ class FakeInventory:
         for pid, qty in self.reservations.pop(order_id, []):
             if pid in self.stock:
                 self.stock[pid] += qty
+
+
+class FakeChat:
+    """Offers by id, as chat's internal endpoint returns them."""
+
+    def __init__(self):
+        self.offers, self.down = {}, False
+
+    def offer(self, offer_id):
+        if self.down:
+            raise ChatError(502, "CHAT_UNAVAILABLE", "could not reach chat")
+        if offer_id not in self.offers:
+            raise ChatError(404, "OFFER_NOT_FOUND", "not found")
+        return self.offers[offer_id]
 
 
 class Outbox:
@@ -108,10 +123,11 @@ def engine():
 def ctx(engine):
     Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
-    razorpay, catalog, inventory = FakeRazorpay(), FakeCatalog(), FakeInventory()
-    app = create_app(sessionmaker(engine, expire_on_commit=False), catalog, razorpay, WEBHOOK_SECRET, inventory=inventory)
+    razorpay, catalog, inventory, chat = FakeRazorpay(), FakeCatalog(), FakeInventory(), FakeChat()
+    app = create_app(sessionmaker(engine, expire_on_commit=False), catalog, razorpay, WEBHOOK_SECRET, inventory=inventory, chat=chat)
     client = TestClient(app)
-    return {"client": client, "outbox": Outbox(engine), "razorpay": razorpay, "catalog": catalog, "inventory": inventory, "engine": engine}
+    return {"client": client, "outbox": Outbox(engine), "razorpay": razorpay, "catalog": catalog, "inventory": inventory,
+            "chat": chat, "engine": engine}
 
 
 def as_user(user_id, role):
@@ -191,6 +207,60 @@ def test_stock_is_reserved_and_released_on_cancel(ctx):
     assert c.patch(f"/orders/{order_id}/status", json={"status": "cancelled"}, headers=WHOLESALER).status_code == 200
     assert inventory.stock[1] == 15
     assert place(c, [{"productId": 1, "qty": 10}]).status_code == 201
+
+
+def accepted_offer(offer_id="o1", product_id="1", qty=10, price="80.50", status="accepted", wholesaler="w1", retailer="r1"):
+    return Offer(offer_id, product_id, qty, Decimal(price), status, wholesaler, retailer)
+
+
+def test_accepted_offer_sets_line_price_once(ctx):
+    c, inventory = ctx["client"], ctx["inventory"]
+    ctx["chat"].offers["o1"] = accepted_offer()
+    res = place(c, [{"productId": 1, "qty": 10, "offerId": "o1"}, {"productId": 2, "qty": 3}])
+    assert res.status_code == 201, res.text
+    order = res.json()["data"]
+    assert [i["unitPrice"] for i in order["items"]] == [80.5, 49.99]  # offer price, catalog price
+    assert Decimal(str(order["total"])) == Decimal("954.97")  # 10 x 80.50 + 3 x 49.99
+    assert ctx["outbox"].events[0][1]["payload"]["total"] == "954.97"
+
+    res = place(c, [{"productId": 1, "qty": 10, "offerId": "o1"}])
+    assert (res.status_code, code(res)) == (409, "OFFER_ALREADY_USED")
+    assert len(inventory.reservations) == 1  # the refused order's stock was released
+    assert len(ctx["outbox"].events) == 1
+
+
+def test_concurrent_orders_cannot_share_an_offer(ctx):
+    ctx["chat"].offers["o1"] = accepted_offer()
+    with ThreadPoolExecutor(2) as pool:
+        results = list(pool.map(lambda _: place(ctx["client"], [{"productId": 1, "qty": 10, "offerId": "o1"}]), range(2)))
+    assert sorted(r.status_code for r in results) == [201, 409]
+
+
+@pytest.mark.parametrize(
+    "offer, status, err",
+    [
+        (None, 404, "OFFER_NOT_FOUND"),
+        (accepted_offer(retailer="r2"), 403, "FORBIDDEN"),
+        (accepted_offer(status="open"), 409, "OFFER_NOT_ACCEPTED"),
+        (accepted_offer(status="countered"), 409, "OFFER_NOT_ACCEPTED"),
+        (accepted_offer(product_id="2"), 422, "OFFER_MISMATCH"),
+        (accepted_offer(qty=20), 422, "OFFER_MISMATCH"),
+        (accepted_offer(wholesaler="w2"), 422, "OFFER_MISMATCH"),
+    ],
+)
+def test_place_order_rejects_bad_offer(ctx, offer, status, err):
+    if offer:
+        ctx["chat"].offers["o1"] = offer
+    res = place(ctx["client"], [{"productId": 1, "qty": 10, "offerId": "o1"}])
+    assert (res.status_code, code(res)) == (status, err), res.text
+    assert ctx["inventory"].reservations == {} and ctx["outbox"].events == []
+
+
+def test_chat_down_places_nothing(ctx):
+    ctx["chat"].down = True
+    res = place(ctx["client"], [{"productId": 1, "qty": 10, "offerId": "o1"}])
+    assert (res.status_code, code(res)) == (502, "CHAT_UNAVAILABLE")
+    assert place(ctx["client"]).status_code == 201  # lines without an offer never ask chat
 
 
 def test_inventory_down_places_nothing(ctx):
@@ -310,7 +380,7 @@ def test_webhook_ignores_unknown_and_unrelated_events(ctx):
 
 def test_payments_not_configured(engine):
     Base.metadata.create_all(engine)
-    app = create_app(sessionmaker(engine), FakeCatalog(), razorpay=None, webhook_secret="", inventory=FakeInventory())
+    app = create_app(sessionmaker(engine), FakeCatalog(), razorpay=None, webhook_secret="", inventory=FakeInventory(), chat=FakeChat())
     c = TestClient(app)
     order_id = place(c).json()["data"]["id"]
     res = c.post(f"/orders/{order_id}/payment", headers=RETAILER)
@@ -393,7 +463,10 @@ def test_migrations_match_models(engine):
 
 def test_migrations_adopt_create_all_database(engine):
     reset_schema(engine)
-    Base.metadata.create_all(engine)  # a database from before migrations
+    Base.metadata.create_all(engine)  # a database from before migrations, which had no offer_id yet
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE order_items DROP COLUMN offer_id"))
     init_db(engine)
     with engine.connect() as conn:
-        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0001"
+        assert conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == "0002"
+        assert compare_metadata(MigrationContext.configure(conn), Base.metadata) == []

@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
 from app import create_app, init_db
-from clients import CatalogClient, InventoryClient, KafkaPublisher, RazorpayClient
+from clients import CatalogClient, ChatClient, InventoryClient, KafkaPublisher, RazorpayClient
 from outbox import run_relay
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -54,6 +54,7 @@ def build_app():
         sessions,
         catalog=CatalogClient(require_env("CATALOG_URL")),
         inventory=InventoryClient(require_env("INVENTORY_URL")),
+        chat=ChatClient(require_env("CHAT_URL")),
         razorpay=razorpay,
         webhook_secret=os.getenv("RAZORPAY_WEBHOOK_SECRET", ""),
     )

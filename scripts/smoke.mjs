@@ -397,6 +397,17 @@ assert.equal(again.error?.code, 'OFFER_NOT_OPEN');
 await eventually('offer notification', async () => (await api('GET', '/notifications', { token: wholesaler.token })).data.some((n) => n.refType === 'thread' && n.refId === threadId));
 await eventually('offer-accepted notification', async () => (await api('GET', '/notifications', { token: wholesaler.token })).data.some((n) => n.type === 'chat.offer.updated' && n.title === 'Offer accepted' && n.refId === threadId));
 step('thread opened; offer → counter → accept seen live; double accept 409; offer and acceptance notified');
+
+assert.equal((await api('PATCH', `/inventory/${pid}`, { token: wholesaler.token, body: { warehouseId: 'surat', delta: 50 } })).status, 200);
+const offerLine = { productId: pid, qty: 50, offerId: counter.data.id };
+const dealOrder = await api('POST', '/orders', { token: retailer.token, body: { items: [offerLine] } });
+assert.equal(dealOrder.status, 201, JSON.stringify(dealOrder));
+assert.equal(dealOrder.data.items[0].unitPrice, 1720);
+assert.equal(dealOrder.data.total, 86000); // 50 x the accepted 1720, not the catalog 1800
+const reused = await api('POST', '/orders', { token: retailer.token, body: { items: [offerLine] } });
+assert.equal(reused.error?.code, 'OFFER_ALREADY_USED', JSON.stringify(reused));
+assert.equal((await api('GET', `/chat/offers/${counter.data.id}`, { token: retailer.token })).status, 404);
+step('order with the accepted offer priced at 1720 x 50 = 86000; reusing the offer 409; offer read not reachable from outside');
 room.ws.close();
 inbox.ws.close();
 

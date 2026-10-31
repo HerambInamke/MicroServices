@@ -1,10 +1,11 @@
-"""Outbound integrations: Wholesale Catalog (pricing), Razorpay (payments) and Kafka (events)."""
+"""Outbound integrations: Wholesale Catalog (pricing), Chat (agreed offers), Razorpay (payments) and Kafka (events)."""
 
 import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
+from urllib.parse import quote
 from uuid import uuid4
 
 import httpx
@@ -81,6 +82,44 @@ class InventoryClient:
             self._http.post("/inventory/release", json={"orderId": order_id}).raise_for_status()
         except httpx.HTTPError:
             log.exception("could not release stock for order %s; it stays reserved", order_id)
+
+
+class ChatError(Exception):
+    """Chat has no such offer or could not be reached."""
+
+    def __init__(self, status: int, code: str, message: str):
+        super().__init__(message)
+        self.status, self.code, self.message = status, code, message
+
+
+@dataclass(frozen=True)
+class Offer:
+    id: str
+    product_id: str
+    qty: int
+    unit_price: Decimal
+    status: str
+    wholesaler_id: str
+    retailer_id: str
+
+
+class ChatClient:
+    """Internal Chat endpoint; reached directly on the compose network, never through the gateway."""
+
+    def __init__(self, base_url: str, timeout: float = 5.0):
+        self._http = httpx.Client(base_url=base_url, timeout=timeout)
+
+    def offer(self, offer_id: str) -> Offer:
+        try:
+            res = self._http.get(f"/chat/offers/{quote(offer_id, safe='')}")
+        except httpx.HTTPError as e:
+            raise ChatError(502, "CHAT_UNAVAILABLE", "could not reach chat") from e
+        if res.status_code == 404:
+            raise ChatError(404, "OFFER_NOT_FOUND", f"offer {offer_id} not found")
+        if res.status_code != 200:
+            raise ChatError(502, "CHAT_UNAVAILABLE", "chat returned an unexpected response")
+        d = json.loads(res.text, parse_float=Decimal)["data"]
+        return Offer(d["id"], d["productId"], int(d["qty"]), Decimal(d["unitPrice"]), d["status"], d["wholesalerId"], d["retailerId"])
 
 
 class PaymentProviderError(Exception):
