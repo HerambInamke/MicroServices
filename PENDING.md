@@ -1,9 +1,11 @@
 # Pending work: Provenance (MicroServices)
 
-Snapshot: 2026-10-30. Done on 2026-10-30: D1 (#28), D3 (#29), D6 (#30), D2 outbox everywhere (#31 order-payment + catalog, #33 ledger,
-#34 chat, which runs MongoDB as a single-node replica set), D5 schema migrations (Alembic in order-payment, embedded
-SQL files in media-upload), and B1. D8 (Weaviate cursor paging) done on 2026-10-31. Phases 1–5 are built and merged.
-Phase 6 (OSS polish) is mostly done. Smoke test Phases 1–5 and CI (17 jobs) are green.
+Snapshot: 2026-10-31. Done on 2026-10-30: D1 (#28), D3 (#29), D6 (#30), D2 outbox everywhere (#31 order-payment + catalog, #33 ledger,
+#34 chat, which runs MongoDB as a single-node replica set), and B1. Done on 2026-10-31: product events on one
+`product.changed` topic (#36), production compose with Caddy TLS and named volumes (#37), D8 Weaviate cursor paging (#38),
+D4 immudb preconditions (#39), D5 schema migrations (#40), web frontend `apps/web` (#41), accepted offers price orders
+(#42, #43), D9 ledger history paging (#44), D7 analytics backfill (#45). Phases 1–5 are built and merged.
+Phase 6 (OSS polish) is mostly done. Smoke test Phases 1–5 (including the offer-price step) and CI (18 jobs) are green.
 
 To resume: open this file and pick a section. Items are grouped by **what blocks them**.
 
@@ -40,7 +42,8 @@ To resume: open this file and pick a section. Items are grouped by **what blocks
 ## B. Waiting for your go-ahead (outward-facing)
 
 ### B1. "Good first issue" issues: done
-Filed #26 (D7, analytics backfill) and #27 (D9, ledger history paging) with the `good first issue` label.
+Filed #26 (D7, analytics backfill) and #27 (D9, ledger history paging) with the `good first issue` label. Nobody took
+them, so both were built on 2026-10-31 (#45, #44) and are closed.
 
 ### B2. Human-review checkpoints
 Never-ticked "Human review" boxes, for you to look over and tick:
