@@ -188,6 +188,23 @@ jobs:
       - run: forge install foundry-rs/forge-std@v1.9.4 --no-git
       - run: forge test
 
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22 # vitest 5 needs Node 22+
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
   compose:
     name: docker-compose config
     runs-on: ubuntu-latest
