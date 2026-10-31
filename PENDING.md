@@ -1,7 +1,7 @@
 # Pending work: Provenance (MicroServices)
 
 Snapshot: 2026-10-30. Done on 2026-10-30: D1 (#28), D3 (#29), D6 (#30), D2 outbox everywhere (#31 order-payment + catalog, #33 ledger,
-#34 chat, which runs MongoDB as a single-node replica set), and B1. Phases 1–5 are built and merged.
+#34 chat, which runs MongoDB as a single-node replica set), and B1. D8 (Weaviate cursor paging) done on 2026-10-31. Phases 1–5 are built and merged.
 Phase 6 (OSS polish) is mostly done. Smoke test Phases 1–5 and CI (17 jobs) are green.
 
 To resume: open this file and pick a section. Items are grouped by **what blocks them**.
@@ -70,7 +70,6 @@ Never-ticked "Human review" boxes, for you to look over and tick:
 | D4 | **Ledger handoff lock is in process.** It is correct only with one ledger replica; use an immudb precondition before scaling out. | `services/provenance-ledger/handlers.go` | Low (single instance) |
 | D5 | **No schema migrations** for order-payment (create_all) and media-upload (IF NOT EXISTS). Adopt Alembic / a migration tool at the first schema change. | `order-payment/app.py`, `media-upload/store.go` | Low now |
 | D7 | **Analytics:** if the catalog is unreachable during ingest, the line is filed under category 0 for good. Add a backfill job (#26). | `services/analytics/ingest.py` | Low |
-| D8 | **Weaviate paging** is offset-based, unordered, capped at 10k. Switch to the cursor API for large registries. | `counterfeit-detection/store.py` | Low |
 | D9 | **Ledger history scan** caps at 1000 entries per piece. Page it if pieces get long histories (#27). | `provenance-ledger/store.go` | Low |
 | D10 | **Trust-score weights** (0.7 rating / 0.3 fulfilment, prior m=3, C=5) are a first guess; tune with real data. | `services/reviews/score.js` | Product |
 

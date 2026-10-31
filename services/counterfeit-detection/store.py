@@ -1,6 +1,7 @@
 """Weaviate holds one object per registered design, with our CLIP vector (no Weaviate vectorizer)."""
 
 from datetime import datetime, timezone
+from itertools import islice
 from urllib.parse import urlparse
 
 import weaviate
@@ -55,10 +56,10 @@ class WeaviateStore:
         self._col.data.delete_by_id(design_id)
 
     def list_page(self, page: int, limit: int) -> tuple[list[dict], int]:
-        # shortcut: offset paging is unordered and capped by Weaviate's QUERY_MAXIMUM_RESULTS (10k); switch to the cursor API for larger registries.
-        res = self._col.query.fetch_objects(limit=limit, offset=(page - 1) * limit)
+        # Cursor API: uuid order, no 10k offset cap; page N walks the objects before it in batches.
+        objs = islice(self._col.iterator(), (page - 1) * limit, page * limit)
         total = self._col.aggregate.over_all(total_count=True).total_count
-        return [_view(o.uuid, o.properties) for o in res.objects], total
+        return [_view(o.uuid, o.properties) for o in objs], total
 
     def nearest(self, vector: list[float], limit: int, exclude_wholesaler: str | None = None) -> list[tuple[dict, float]]:
         """Closest designs with cosine similarity, best first."""
