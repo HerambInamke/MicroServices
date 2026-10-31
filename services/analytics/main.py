@@ -42,7 +42,7 @@ def build_app():
     consumer_store = ClickHouseStore.connect(require_env("CLICKHOUSE_URL"))
     category_of = ingest.CategoryLookup(require_env("CATALOG_URL"))
     threading.Thread(target=ingest.run, args=(consumer_store, category_of, require_env("KAFKA_BROKERS")), daemon=True).start()
-    return create_app(store)
+    return create_app(store, category_of)
 
 
 if __name__ == "__main__":

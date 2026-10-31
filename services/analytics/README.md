@@ -11,6 +11,7 @@ Turns Kafka events into seller dashboards and public price trends. Events are st
 |---|---|
 | `GET /analytics/seller/:wholesalerId/summary?period=7d\|30d\|90d` | that wholesaler or an admin |
 | `GET /analytics/trends?category=&period=30d\|90d\|365d` | public: weekly sales per category |
+| `POST /analytics/backfill` | admin: re-files order lines left at category 0 because the catalog was unreachable at ingest; returns `{updated}` |
 
 ## Events
 

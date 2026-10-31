@@ -6,6 +6,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+import ingest
+
 log = logging.getLogger("analytics")
 
 DAYS = {"7d": 7, "30d": 30, "90d": 90, "365d": 365}
@@ -31,7 +33,7 @@ def caller(x_user_id: str | None = Header(None), x_user_role: str | None = Heade
     return x_user_id, x_user_role or ""
 
 
-def create_app(store) -> FastAPI:
+def create_app(store, category_of) -> FastAPI:
     app = FastAPI(title="analytics")
 
     @app.exception_handler(ApiError)
@@ -70,5 +72,12 @@ def create_app(store) -> FastAPI:
     @app.get("/analytics/trends")
     def trends(category: int | None = Query(None, ge=1), period: Literal["30d", "90d", "365d"] = "90d"):
         return ok({"period": period, "weeks": store.trends(category, DAYS[period])})
+
+    # Admin-triggered rather than on a timer: catalog outages are rare and visible, and a deleted product's lines would be re-asked forever.
+    @app.post("/analytics/backfill")
+    def backfill(who: tuple[str, str] = Depends(caller)):
+        if who[1] != "admin":
+            raise ApiError(403, "FORBIDDEN", "only admins can backfill")
+        return ok({"updated": ingest.backfill(store, category_of)})
 
     return app
