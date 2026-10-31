@@ -15,6 +15,9 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
+// ErrConflict means the piece changed after it was read, so the update was not applied.
+var ErrConflict = errors.New("conflict")
+
 type Piece struct {
 	ID          string    `json:"id"`
 	ProductID   int64     `json:"productId,omitempty"` // catalog product id; 0 when not linked
@@ -26,6 +29,7 @@ type Piece struct {
 	LastHash    string    `json:"lastDataHash,omitempty"`
 	Pending     *Offer    `json:"pendingHandoff,omitempty"`
 	CreatedAt   time.Time `json:"createdAt"`
+	Rev         uint64    `json:"-"` // immudb tx that wrote the state read; Update fails with ErrConflict if it moved on
 }
 
 // Offer is a handoff the current owner has proposed and the receiver has not yet signed.
@@ -59,7 +63,7 @@ type Store interface {
 	Create(ctx context.Context, p Piece, first Event, out Outgoing) error
 	Get(ctx context.Context, id string) (Piece, error)
 	// Update replaces the piece state and, when e is set, appends that history entry and its event (out, required
-	// with e) in the same transaction.
+	// with e) in the same transaction. It returns ErrConflict when the piece changed since Get returned p.
 	Update(ctx context.Context, p Piece, e *Event, out *Outgoing) error
 	History(ctx context.Context, id string) ([]Event, error)
 	// Pending lists unsent events, each piece's in history order. Sent removes one after Kafka acknowledged it.
@@ -115,8 +119,11 @@ func (s *immuStore) Update(ctx context.Context, p Piece, e *Event, out *Outgoing
 		return err
 	}
 	req := &schema.SetRequest{
-		KVs:           []*schema.KeyValue{{Key: pieceKey(p.ID), Value: pb}},
-		Preconditions: []*schema.Precondition{schema.PreconditionKeyMustExist(pieceKey(p.ID))},
+		KVs: []*schema.KeyValue{{Key: pieceKey(p.ID), Value: pb}},
+		// Optimistic concurrency across replicas: of two writers that read the same state, only the first commits.
+		Preconditions: []*schema.Precondition{
+			schema.PreconditionKeyMustExist(pieceKey(p.ID)), schema.PreconditionKeyNotModifiedAfterTX(pieceKey(p.ID), p.Rev),
+		},
 	}
 	if e != nil {
 		eb, err := json.Marshal(e)
@@ -132,6 +139,9 @@ func (s *immuStore) Update(ctx context.Context, p Piece, e *Event, out *Outgoing
 		req.Preconditions = append(req.Preconditions, schema.PreconditionKeyMustNotExist(eventKey(p.ID, e.Index)))
 	}
 	_, err = s.c.SetAll(ctx, req)
+	if err != nil && strings.Contains(err.Error(), "precondition failed") {
+		return ErrConflict
+	}
 	return err
 }
 
@@ -186,6 +196,6 @@ func (s *immuStore) Get(ctx context.Context, id string) (Piece, error) {
 		}
 		return Piece{}, err
 	}
-	var p Piece
+	p := Piece{Rev: entry.Tx}
 	return p, json.Unmarshal(entry.Value, &p)
 }

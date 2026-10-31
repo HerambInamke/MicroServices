@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -22,16 +21,6 @@ type Server struct {
 	store Store // also holds the event outbox; runRelay sends it to Kafka
 	users Users
 	chain Chain
-	locks sync.Map // piece id -> *sync.Mutex
-}
-
-// lockPiece serialises state changes on one piece.
-// shortcut: in-process lock, correct only with a single ledger replica; use an immudb precondition on the read tx before scaling out.
-func (s *Server) lockPiece(id string) func() {
-	v, _ := s.locks.LoadOrStore(id, &sync.Mutex{})
-	mu := v.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock
 }
 
 func (s *Server) routes() *mux.Router {
@@ -214,9 +203,7 @@ func (s *Server) offer(w http.ResponseWriter, r *http.Request, userID, role stri
 		fail(w, http.StatusBadRequest, "VALIDATION", "toUserId is required and must be another user")
 		return
 	}
-	id := mux.Vars(r)["id"]
-	defer s.lockPiece(id)()
-	p, ok := s.getPiece(w, r, id)
+	p, ok := s.getPiece(w, r, mux.Vars(r)["id"])
 	if !ok {
 		return
 	}
@@ -246,7 +233,12 @@ func (s *Server) offer(w http.ResponseWriter, r *http.Request, userID, role stri
 	h := handoffHash(chainPieceID(p.ID), prev, userID, to.ID, to.Role)
 	// A new offer replaces any earlier one, so the owner can redirect an unaccepted handoff.
 	p.Pending = &Offer{FromUserID: userID, ToUserID: to.ID, Role: to.Role, DataHash: common.Hash(h).Hex(), OfferedAt: time.Now().UTC()}
-	if err := s.store.Update(r.Context(), p, nil, nil); err != nil {
+	err = s.store.Update(r.Context(), p, nil, nil)
+	if errors.Is(err, ErrConflict) {
+		fail(w, http.StatusConflict, "CONCURRENT_CHANGE", "the piece changed while handing it off; reload it and try again")
+		return
+	}
+	if err != nil {
 		internal(w, err)
 		return
 	}
@@ -262,9 +254,7 @@ func (s *Server) accept(w http.ResponseWriter, r *http.Request, userID, role str
 		fail(w, http.StatusBadRequest, "INVALID_BODY", "body must be JSON")
 		return
 	}
-	id := mux.Vars(r)["id"]
-	defer s.lockPiece(id)()
-	p, ok := s.getPiece(w, r, id)
+	p, ok := s.getPiece(w, r, mux.Vars(r)["id"])
 	if !ok {
 		return
 	}
@@ -320,7 +310,16 @@ func (s *Server) accept(w http.ResponseWriter, r *http.Request, userID, role str
 		"pieceId": p.ID, "index": e.Index, "fromUserId": offer.FromUserID, "toUserId": userID, "role": e.Role,
 		"actorAddress": e.ActorAddress, "dataHash": e.DataHash, "txHash": txHash, "signedAt": e.Timestamp,
 	})
-	if err := s.store.Update(ctx, p, &e, &out); err != nil {
+	err = s.store.Update(ctx, p, &e, &out)
+	if errors.Is(err, ErrConflict) {
+		// Usually a concurrent accept of the same offer that already mirrored this tx.
+		// shortcut: if the owner redirected the offer while this tx was mined, the tx stays unmirrored and verify
+		// reports it; mark the offer as being accepted before going on-chain if redirects become common.
+		log.Printf("handoff for %s is on-chain in %s but the piece changed meanwhile", p.ID, txHash)
+		fail(w, http.StatusConflict, "CONCURRENT_CHANGE", "the piece changed while accepting; reload it")
+		return
+	}
+	if err != nil {
 		// The offer is still stored, so repeating the request finds the tx on-chain and mirrors it.
 		log.Printf("handoff for %s is on-chain in %s but not mirrored: %v", p.ID, txHash, err)
 		fail(w, http.StatusInternalServerError, "MIRROR_FAILED", "recorded on-chain in tx "+txHash+" but not saved; retry the same request")

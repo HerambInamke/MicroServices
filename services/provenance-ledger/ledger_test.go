@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -248,7 +249,7 @@ func TestImmuStore(t *testing.T) {
 	if err != nil || got.ID != p.ID || got.OwnerID != "w1" {
 		t.Fatalf("get: %v %v", got, err)
 	}
-	p.OwnerID = "d1"
+	p.OwnerID, p.Rev = "d1", got.Rev
 	handoff := newOutgoing("piece.handoff.signed", "PieceHandoffSigned", p.ID, map[string]any{"pieceId": p.ID})
 	if err := st.Update(ctx, p, &Event{Index: 1, Type: "handoff", UserID: "d1"}, &handoff); err != nil {
 		t.Fatal(err)
@@ -293,5 +294,63 @@ func TestImmuStore(t *testing.T) {
 	}
 	if _, err := st.Get(ctx, uuid.NewString()); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing piece: want ErrNotFound, got %v", err)
+	}
+}
+
+// barrierStore holds every Get until both requests have read the piece, so both act on the same state.
+type barrierStore struct {
+	Store
+	read *sync.WaitGroup
+}
+
+func (b barrierStore) Get(ctx context.Context, id string) (Piece, error) {
+	p, err := b.Store.Get(ctx, id)
+	b.read.Done()
+	b.read.Wait()
+	return p, err
+}
+
+// Two replicas handing off the same piece at once: exactly one commits, the other gets 409. Needs TEST_IMMUDB_HOST.
+func TestConcurrentHandoffsOneWins(t *testing.T) {
+	host := os.Getenv("TEST_IMMUDB_HOST")
+	if host == "" {
+		t.Skip("TEST_IMMUDB_HOST not set")
+	}
+	ctx := context.Background()
+	st, err := newImmuStore(ctx, host, "immudb", "immudb", "defaultdb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := Piece{ID: uuid.NewString(), WeaverID: "w1", OwnerID: "w1", OwnerRole: "weaver", EventCount: 1, CreatedAt: time.Now().UTC()}
+	if err := st.Create(ctx, p, Event{Type: "registered", Role: "weaver", UserID: "w1"}, newOutgoing("piece.registered", "PieceRegistered", p.ID, map[string]any{})); err != nil {
+		t.Fatal(err)
+	}
+	defer st.Sent(ctx, outboxKey(p.ID, 0))
+
+	read := &sync.WaitGroup{}
+	read.Add(2)
+	users := fakeUsers{"d1": {ID: "d1", Role: "dye-house"}, "h1": {ID: "h1", Role: "wholesaler"}}
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	for i, to := range []string{"d1", "h1"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s := &Server{store: barrierStore{st, read}, users: users} // one Server per replica, sharing immudb
+			req := httptest.NewRequest("POST", "/pieces/"+p.ID+"/handoffs", strings.NewReader(`{"toUserId":"`+to+`"}`))
+			req.Header.Set("X-User-Id", "w1")
+			req.Header.Set("X-User-Role", "weaver")
+			rec := httptest.NewRecorder()
+			s.routes().ServeHTTP(rec, req)
+			codes[i] = rec.Code
+		}()
+	}
+	wg.Wait()
+	sort.Ints(codes)
+	if codes[0] != http.StatusCreated || codes[1] != http.StatusConflict {
+		t.Fatalf("want one 201 and one 409, got %v", codes)
+	}
+	if got, err := st.Get(ctx, p.ID); err != nil || got.Pending == nil {
+		t.Fatalf("the winning offer was not stored: %+v (%v)", got, err)
 	}
 }
