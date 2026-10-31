@@ -27,6 +27,7 @@ path. It also rate-limits per IP, proxies WebSocket upgrades, and reports aggreg
 |---|---|
 | `JWT_SECRET` | Must equal auth-identity's |
 | `RATE_LIMIT_PER_MINUTE` | Per IP per minute, default 300 |
+| `TRUST_PROXY` | Express `trust proxy` (e.g. `1` = one proxy hop). Set only behind a proxy (prod compose): the limit then keys on the client IP from `X-Forwarded-For`. Unset: the socket address, since a directly exposed gateway would trust spoofed headers |
 | `REDIS_URL` | Optional. Set: one limit shared by every gateway instance. Unset: in memory, per instance. If Redis is unreachable, requests are let through (and logged) rather than refused |
 | `AUTH_URL`, `PROFILE_URL`, `CATALOG_URL`, `MEDIA_URL`, `ORDER_URL`, `LEDGER_URL`, `QR_URL`, `COUNTERFEIT_URL`, `SEARCH_URL`, `INVENTORY_URL`, `ANALYTICS_URL`, `NOTIFICATIONS_URL`, `CHAT_URL`, `REVIEWS_URL` | Base URLs of the services, all required |
 

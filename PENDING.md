@@ -56,11 +56,14 @@ Never-ticked "Human review" boxes, for you to look over and tick:
 
 - [ ] Real values in `.env`: `JWT_SECRET`, `ADMIN_EMAIL` / `ADMIN_PASSWORD`, `POSTGRES_PASSWORD`, `MONGO_PASSWORD`,
       `MINIO_PASSWORD`, `CLICKHOUSE_PASSWORD`, `PUBLIC_BASE_URL`, plus Razorpay.
-- [ ] Close the infrastructure ports that compose publishes (5432, 27017, 9000/9001, 9092/29092, 2181, 8545, 3322).
-      Only the gateway may be reachable; otherwise anyone can inject fake Kafka events.
-- [ ] TLS reverse proxy in front of `:3000` that passes WebSocket upgrades for `/api/v1/ws/`.
-- [ ] immudb still uses its default login `immudb`/`immudb`; change it, or make sure 3322 is closed.
-- [ ] Volume backups (or move to managed databases).
+      `docker-compose.prod.yml` refuses to start until these (plus `IMMUDB_PASSWORD`, `DOMAIN`) are set.
+- [x] Close the infrastructure ports that compose publishes (5432, 27017, 9000/9001, 9092/29092, 2181, 8545, 3322).
+      Only the gateway may be reachable; otherwise anyone can inject fake Kafka events. (`docker-compose.prod.yml`)
+- [x] TLS reverse proxy in front of `:3000` that passes WebSocket upgrades for `/api/v1/ws/`. (Caddy, `infra/Caddyfile`)
+- [x] immudb still uses its default login `immudb`/`immudb`; change it, or make sure 3322 is closed.
+      (`IMMUDB_PASSWORD` in the prod override; ledger uses the same value)
+- [ ] Volume backups (or move to managed databases). The prod override gives every datastore a named volume;
+      snapshotting them is still to set up.
 
 ---
 

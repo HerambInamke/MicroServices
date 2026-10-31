@@ -25,6 +25,7 @@ const app = createApp({
   secret: requireEnv('JWT_SECRET'),
   rateLimitPerMinute: Number(process.env.RATE_LIMIT_PER_MINUTE) || 300,
   countHits: hitCounter(process.env.REDIS_URL),
+  trustProxy: process.env.TRUST_PROXY,
   services: {
     auth: requireEnv('AUTH_URL'),
     profile: requireEnv('PROFILE_URL'),

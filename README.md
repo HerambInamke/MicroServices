@@ -205,25 +205,29 @@ RATE_LIMIT_PER_MINUTE=300
 The compose file runs the whole platform on one machine (a VM with 4+ vCPU and 16 GB RAM is comfortable).
 
 1. Install Docker Engine + the compose plugin on the server and copy the repository there.
-2. Create `.env` as above (never commit it).
-3. **Close the infrastructure ports.** `docker-compose.yml` publishes Postgres 5432, Mongo 27017, MinIO
-   9000/9001, Kafka 9092/29092, ZooKeeper 2181, Anvil 8545 and immudb 3322 for local debugging. On a
-   server, firewall everything except 80/443, or delete those `ports:` entries. Only the gateway should be
-   reachable, and only through the TLS proxy below.
-4. Put a TLS reverse proxy (Caddy, nginx, a cloud load balancer) in front of `localhost:3000`, and make sure
-   it passes WebSocket upgrades (`Upgrade` / `Connection` headers) for `/api/v1/ws/`. With Caddy this is one
-   line: `provenance.example.com { reverse_proxy localhost:3000 }`.
-5. `docker compose up --build -d`, then `curl https://<domain>/api/v1/health`.
+2. Create `.env` as above (never commit it), plus `DOMAIN=provenance.yourcompany.in` (DNS A/AAAA record
+   pointing at the server) and `IMMUDB_PASSWORD=<strong password>` (replaces immudb's default login).
+3. Start with the production override (needs Docker Compose >= 2.24):
+   `docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d`.
+   `docker-compose.prod.yml` unpublishes every infrastructure and service port (only Caddy listens, on
+   80/443), adds Caddy (`infra/Caddyfile`) with automatic HTTPS for `DOMAIN` in front of the gateway
+   (WebSocket upgrades for `/api/v1/ws/` pass through) and sets `TRUST_PROXY=1` so the gateway rate-limits
+   per client IP from `X-Forwarded-For`, gives every datastore a named data volume, and refuses to
+   start while any of `JWT_SECRET`, `ADMIN_PASSWORD`, `POSTGRES_PASSWORD`, `MONGO_PASSWORD`, `MINIO_PASSWORD`,
+   `CLICKHOUSE_PASSWORD`, `IMMUDB_PASSWORD`, `PUBLIC_BASE_URL`, `DOMAIN` is unset.
+   Check what will be published with `docker compose -f docker-compose.yml -f docker-compose.prod.yml config`.
+4. Open only 80/443 (TCP, plus 443/UDP for HTTP/3) in the server firewall.
+5. `curl https://<domain>/api/v1/health`.
 6. Point the Razorpay webhook at `https://<domain>/api/v1/payments/webhook`.
 7. For the real chain: deploy `contracts/src/ProvenanceRegistry.sol` with Foundry (`contracts/deploy.sh`),
    set `CHAIN_RPC_URL`, `RELAYER_KEY`, `CONTRACT_ADDRESS`, and remove the `anvil` / `contract-deploy`
    dependency from `provenance-ledger` in compose.
-8. Backups: the named volumes hold Postgres, Mongo, MinIO, immudb, Redis, Elasticsearch, Weaviate and
-   ClickHouse data; snapshot them (or move to managed databases by changing the URLs in compose).
+8. Backups: with the prod override, Postgres, Mongo, MinIO, immudb, ClickHouse, Redis, Elasticsearch,
+   Weaviate and Caddy's certificates live in named volumes (`docker volume ls`), so `down` + `up` keeps them
+   (`down -v` deletes them). Snapshot those volumes (or move to managed databases by changing the URLs in
+   compose). The local Anvil chain has no volume; use a real chain in production (step 7).
 
 Known limits worth knowing before going live:
-- The immudb login is its default (`immudb`/`immudb`); it is only reachable inside the Docker network once
-  port 3322 is closed.
 - The gateway rate limiter is in memory, per gateway instance.
 - Events are published after the database write without an outbox: if Kafka is down at that moment the
   event is lost (the main data is safe; inbox/search/analytics miss it).
