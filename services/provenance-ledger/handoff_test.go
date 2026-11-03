@@ -280,7 +280,7 @@ func TestEthChainRecordIsIdempotent(t *testing.T) {
 		t.Skip("TEST_CHAIN_RPC_URL not set")
 	}
 	ctx := context.Background()
-	c, err := newEthChain(ctx, rpc, "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80", "0x5FbDB2315678afecb367f032d93F642f64180aa3")
+	c, err := newEthChain(ctx, rpc, "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80", "0x5FbDB2315678afecb367f032d93F642f64180aa3", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,6 +291,10 @@ func TestEthChainRecordIsIdempotent(t *testing.T) {
 
 	tx1, err := c.Record(ctx, pid, "dye-house", h, sig)
 	if err != nil {
+		t.Fatal(err)
+	}
+	// Push the original tx more than one log window behind head, so the lookup must walk back.
+	if err := c.client.Client().CallContext(ctx, nil, "anvil_mine", hexutil.EncodeUint64(2*logWindow+96)); err != nil {
 		t.Fatal(err)
 	}
 	tx2, err := c.Record(ctx, pid, "dye-house", h, sig)

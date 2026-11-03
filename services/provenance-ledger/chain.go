@@ -86,9 +86,14 @@ type ethChain struct {
 	contract *bind.BoundContract
 	auth     *bind.TransactOpts
 	sendMu   sync.Mutex // one relayer key: serialise sends so concurrent handoffs don't reuse a nonce
+	// fromBlock is the contract's deploy block (CONTRACT_DEPLOY_BLOCK): no Recorded log is older.
+	fromBlock uint64
 }
 
-func newEthChain(ctx context.Context, rpcURL, keyHex, addrHex string) (*ethChain, error) {
+// logWindow fits under common public-RPC eth_getLogs range caps (Amoy's public RPC allows more).
+const logWindow = 2000
+
+func newEthChain(ctx context.Context, rpcURL, keyHex, addrHex string, fromBlock uint64) (*ethChain, error) {
 	client, err := ethclient.DialContext(ctx, rpcURL)
 	if err != nil {
 		return nil, err
@@ -115,7 +120,7 @@ func newEthChain(ctx context.Context, rpcURL, keyHex, addrHex string) (*ethChain
 	} else if len(code) == 0 {
 		return nil, fmt.Errorf("no contract deployed at %s", addr)
 	}
-	return &ethChain{client: client, abi: parsed, addr: addr, contract: bind.NewBoundContract(addr, parsed, client, client, client), auth: auth}, nil
+	return &ethChain{client: client, abi: parsed, addr: addr, contract: bind.NewBoundContract(addr, parsed, client, client, client), auth: auth, fromBlock: fromBlock}, nil
 }
 
 func (c *ethChain) Record(ctx context.Context, pieceID [32]byte, role string, dataHash [32]byte, sig []byte) (string, error) {
@@ -154,22 +159,37 @@ func (c *ethChain) History(ctx context.Context, pieceID [32]byte) ([]ChainEvent,
 }
 
 func (c *ethChain) findRecord(ctx context.Context, pieceID, dataHash [32]byte) (string, error) {
-	// shortcut: scans the piece's logs from genesis; public Amoy RPCs cap log ranges, so store the deploy block and query from it before going to Amoy.
-	logs, err := c.client.FilterLogs(ctx, ethereum.FilterQuery{
-		Addresses: []common.Address{c.addr},
-		Topics:    [][]common.Hash{{c.abi.Events["Recorded"].ID}, {pieceID}},
-	})
+	head, err := c.client.BlockNumber(ctx)
 	if err != nil {
 		return "", err
 	}
-	for _, l := range logs {
-		vals, err := c.abi.Unpack("Recorded", l.Data) // non-indexed fields: index, role, dataHash
+	// Public RPCs cap eth_getLogs ranges, so walk back from head in windows; a retry usually
+	// follows the original tx closely, so the first window normally holds it.
+	for to := head; ; to -= logWindow {
+		from := c.fromBlock
+		if to >= c.fromBlock+logWindow {
+			from = to - logWindow + 1
+		}
+		logs, err := c.client.FilterLogs(ctx, ethereum.FilterQuery{
+			FromBlock: new(big.Int).SetUint64(from),
+			ToBlock:   new(big.Int).SetUint64(to),
+			Addresses: []common.Address{c.addr},
+			Topics:    [][]common.Hash{{c.abi.Events["Recorded"].ID}, {pieceID}},
+		})
 		if err != nil {
 			return "", err
 		}
-		if vals[2].([32]byte) == dataHash {
-			return l.TxHash.Hex(), nil
+		for _, l := range logs {
+			vals, err := c.abi.Unpack("Recorded", l.Data) // non-indexed fields: index, role, dataHash
+			if err != nil {
+				return "", err
+			}
+			if vals[2].([32]byte) == dataHash {
+				return l.TxHash.Hex(), nil
+			}
+		}
+		if from == c.fromBlock {
+			return "", fmt.Errorf("dataHash %x is already recorded for a different piece", dataHash)
 		}
 	}
-	return "", fmt.Errorf("dataHash %x is already recorded for a different piece", dataHash)
 }

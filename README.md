@@ -197,6 +197,7 @@ PUBLIC_BASE_URL=https://provenance.yourcompany.in
 CHAIN_RPC_URL=https://rpc-amoy.polygon.technology
 RELAYER_KEY=0x<funded relayer private key>
 CONTRACT_ADDRESS=0x<deployed ProvenanceRegistry>
+CONTRACT_DEPLOY_BLOCK=<block number contracts/deploy.sh printed>
 RATE_LIMIT_PER_MINUTE=300
 ```
 

@@ -31,7 +31,7 @@ deletes each once acknowledged. An event is never lost to a Kafka outage; delive
 ## Configuration
 
 `IMMUDB_HOST`, `IMMUDB_USER`, `IMMUDB_PASSWORD`, `IMMUDB_DB`, `CHAIN_RPC_URL`, `RELAYER_KEY`, `CONTRACT_ADDRESS`,
-`AUTH_URL` (looks up linked wallets), `KAFKA_BROKERS`, `PORT`. The contract ABI is embedded as `registry.abi.json`.
+`CONTRACT_DEPLOY_BLOCK` (optional, default 0; the block chain-log lookups start from), `AUTH_URL` (looks up linked wallets), `KAFKA_BROKERS`, `PORT`. The contract ABI is embedded as `registry.abi.json`.
 
 ## Tests
 
