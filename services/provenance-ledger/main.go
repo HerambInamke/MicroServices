@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -59,8 +60,15 @@ func main() {
 
 	var chain *ethChain
 	rpcURL, relayerKey, contract := requireEnv("CHAIN_RPC_URL"), requireEnv("RELAYER_KEY"), requireEnv("CONTRACT_ADDRESS")
+	var deployBlock uint64 // unset means 0, fine for a local anvil
+	if v := os.Getenv("CONTRACT_DEPLOY_BLOCK"); v != "" {
+		var err error
+		if deployBlock, err = strconv.ParseUint(v, 10, 64); err != nil {
+			log.Fatalf("invalid CONTRACT_DEPLOY_BLOCK: %v", err)
+		}
+	}
 	retry("chain", func() (err error) {
-		chain, err = newEthChain(context.Background(), rpcURL, relayerKey, contract)
+		chain, err = newEthChain(context.Background(), rpcURL, relayerKey, contract, deployBlock)
 		return err
 	})
 

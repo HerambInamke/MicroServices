@@ -263,6 +263,7 @@ services:
       context: ./services/provenance-ledger
     environment:
       <<: *chain
+      CONTRACT_DEPLOY_BLOCK: ${CONTRACT_DEPLOY_BLOCK:-0}
       PORT: 8086
       IMMUDB_HOST: immudb
       IMMUDB_USER: immudb
