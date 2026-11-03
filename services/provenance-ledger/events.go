@@ -59,17 +59,37 @@ func (k *kafkaSender) Send(ctx context.Context, o Outgoing) error {
 	return err
 }
 
+// leaseTTL bounds how long a replica that died mid-batch blocks the others. A send takes at most 5s, and sends stop
+// at half the TTL, so a batch ends before its lease can lapse.
+const leaseTTL = 20 * time.Second
+
+// relayOwner identifies this replica's relay lease.
+var relayOwner = uuid.NewString()
+
 // relayOnce sends pending outbox entries oldest first per piece and deletes each one Kafka acknowledged. It stops at
 // the first failure so no later event overtakes it. Delivery is at least once: a crash between the send and the
-// delete resends the same envelope, which consumers de-duplicate on eventId.
-// shortcut: no cross-replica lease, so two replicas could interleave one piece's events; add one before scaling out
-// (renewing a lease in immudb appends a tx to the immutable log every tick, so keep it off the idle path).
+// delete resends the same envelope, which consumers de-duplicate on eventId. Only the lease holder sends, so two
+// replicas never interleave one piece's events.
+// shortcut: renews the lease (one immudb tx) on every busy tick, including retries while Kafka is down; renew only
+// near expiry if that log growth matters.
 func relayOnce(ctx context.Context, store Store, send func(context.Context, Outgoing) error) (int, error) {
+	// Peek first: the lease is a write to immudb's immutable log, so an idle relay must not take it.
+	if peek, err := store.Pending(ctx, 1); err != nil || len(peek) == 0 {
+		return 0, err
+	}
+	if held, err := store.HoldLease(ctx, relayOwner, leaseTTL); err != nil || !held {
+		return 0, err
+	}
+	start := time.Now()
+	// Scan after taking the lease, so entries the previous holder already sent are not resent.
 	pending, err := store.Pending(ctx, 100)
 	if err != nil {
 		return 0, err
 	}
 	for i, p := range pending {
+		if time.Since(start) > leaseTTL/2 {
+			return i, nil // renew before going on
+		}
 		if err := send(ctx, p.Outgoing); err != nil {
 			log.Printf("kafka did not take %s for %s, will retry: %v", p.Topic, p.Key, err)
 			return i, nil

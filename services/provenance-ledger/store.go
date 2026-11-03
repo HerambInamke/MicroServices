@@ -71,6 +71,9 @@ type Store interface {
 	// Pending lists unsent events, each piece's in history order. Sent removes one after Kafka acknowledged it.
 	Pending(ctx context.Context, limit int) ([]Pending, error)
 	Sent(ctx context.Context, storeKey []byte) error
+	// HoldLease takes or renews the relay lease for owner until now+ttl. It returns false while another owner's
+	// lease is still live, or when another owner took it concurrently.
+	HoldLease(ctx context.Context, owner string, ttl time.Duration) (bool, error)
 }
 
 // immudb keys: piece:{id} holds the current piece state, piece:{id}:event:{n} each history entry, and
@@ -172,6 +175,42 @@ func (s *immuStore) Sent(ctx context.Context, storeKey []byte) error {
 	// A logical delete: the entry stays in immudb's verifiable history, but scans no longer return it.
 	_, err := s.c.Delete(ctx, &schema.DeleteKeysRequest{Keys: [][]byte{storeKey}})
 	return err
+}
+
+var leaseKey = []byte("relay:lease")
+
+type lease struct {
+	Owner string    `json:"owner"`
+	Until time.Time `json:"until"`
+}
+
+func (s *immuStore) HoldLease(ctx context.Context, owner string, ttl time.Duration) (bool, error) {
+	now := time.Now()
+	cond := schema.PreconditionKeyMustNotExist(leaseKey)
+	entry, err := s.c.Get(ctx, leaseKey)
+	switch {
+	case err == nil:
+		var cur lease
+		if err := json.Unmarshal(entry.Value, &cur); err != nil {
+			return false, err
+		}
+		if cur.Owner != owner && now.Before(cur.Until) {
+			return false, nil
+		}
+		cond = schema.PreconditionKeyNotModifiedAfterTX(leaseKey, entry.Tx)
+	case !strings.Contains(err.Error(), "key not found"):
+		return false, err
+	}
+	b, err := json.Marshal(lease{Owner: owner, Until: now.Add(ttl)})
+	if err != nil {
+		return false, err
+	}
+	// Compare-and-set: of two replicas that read the same lease, only the first write commits.
+	_, err = s.c.SetAll(ctx, &schema.SetRequest{KVs: []*schema.KeyValue{{Key: leaseKey, Value: b}}, Preconditions: []*schema.Precondition{cond}})
+	if err != nil && strings.Contains(err.Error(), "precondition failed") {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // historyPage is how many events one scan reads; a var so tests can force several pages.
