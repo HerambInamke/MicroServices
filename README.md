@@ -227,8 +227,10 @@ The compose file runs the whole platform on one machine (a VM with 4+ vCPU and 1
    dependency from `provenance-ledger` in compose.
 8. Backups: with the prod override, Postgres, Mongo, MinIO, immudb, ClickHouse, Redis, Elasticsearch,
    Weaviate and Caddy's certificates live in named volumes (`docker volume ls`), so `down` + `up` keeps them
-   (`down -v` deletes them). Snapshot those volumes (or move to managed databases by changing the URLs in
-   compose). The local Anvil chain has no volume; use a real chain in production (step 7).
+   (`down -v` deletes them). `scripts/backup-volumes.sh <dir>` stops the stack, tars every named volume into
+   `<dir>/<timestamp>/`, and starts the stack again (run it nightly from cron; restore steps are in the script).
+   Or move to managed databases by changing the URLs in compose. The local Anvil chain has no volume; use a
+   real chain in production (step 7).
 
 Known limits worth knowing before going live:
 - The gateway rate limiter is in memory, per gateway instance.
