@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,6 +26,15 @@ type fakeStore struct {
 	pieces map[string]Piece
 	events map[string][]Event
 	outbox map[string]Outgoing // store key -> event
+	lease  lease
+}
+
+func (f *fakeStore) HoldLease(_ context.Context, owner string, ttl time.Duration) (bool, error) {
+	if f.lease.Owner != owner && time.Now().Before(f.lease.Until) {
+		return false, nil
+	}
+	f.lease = lease{Owner: owner, Until: time.Now().Add(ttl)}
+	return true, nil
 }
 
 func newFakeStore() *fakeStore {
@@ -457,4 +467,50 @@ func TestRedirectDuringAcceptConflicts(t *testing.T) {
 	if got, err := f.st.Get(context.Background(), f.pieceID); err != nil || got.OwnerID != "d1" || got.Pending != nil {
 		t.Fatalf("handoff not mirrored: %+v (%v)", got, err)
 	}
+}
+
+// Runs against a real immudb when TEST_IMMUDB_HOST is set.
+func TestImmuLease(t *testing.T) {
+	host := os.Getenv("TEST_IMMUDB_HOST")
+	if host == "" {
+		t.Skip("TEST_IMMUDB_HOST not set")
+	}
+	ctx := context.Background()
+	st, err := newImmuStore(ctx, host, "immudb", "immudb", "defaultdb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := uuid.NewString(), uuid.NewString()
+	hold := func(owner string, ttl time.Duration, want bool) {
+		t.Helper()
+		if got, err := st.HoldLease(ctx, owner, ttl); err != nil || got != want {
+			t.Fatalf("HoldLease(%s): got %v (%v), want %v", owner[:8], got, err, want)
+		}
+	}
+	hold(a, 300*time.Millisecond, true)
+	hold(b, time.Second, false)         // a's lease is live
+	hold(a, 300*time.Millisecond, true) // renew
+	time.Sleep(400 * time.Millisecond)
+	hold(b, time.Second, true) // a's lease lapsed
+	hold(a, time.Second, false)
+	hold(b, time.Millisecond, true) // release for other runs
+	time.Sleep(5 * time.Millisecond)
+
+	// Two replicas racing for a free lease: exactly one wins.
+	var wins int32
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if ok, err := st.HoldLease(ctx, uuid.NewString(), 500*time.Millisecond); err == nil && ok {
+				atomic.AddInt32(&wins, 1)
+			}
+		}()
+	}
+	wg.Wait()
+	if wins != 1 {
+		t.Fatalf("%d replicas took the same lease", wins)
+	}
+	time.Sleep(600 * time.Millisecond) // let it lapse for other runs
 }

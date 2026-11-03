@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"testing"
+	"time"
 )
 
 // fakeKafka fails while down and records what it acknowledged.
@@ -103,5 +104,28 @@ func TestFailedHandoffWritesNoEvent(t *testing.T) {
 	}
 	if sent := f.st.published(); len(sent) != 1 || sent[0].topic != "piece.registered" {
 		t.Fatalf("only the registration may be in the outbox: %v", sent)
+	}
+}
+
+func TestRelayOnlyLeaseHolderSends(t *testing.T) {
+	s, st := newTestServer()
+	if code, env := do(t, s, "POST", "/pieces", "w1", "weaver", `{}`); code != http.StatusCreated {
+		t.Fatalf("register: %d %v", code, env)
+	}
+	kafka := &fakeKafka{}
+	st.lease = lease{Owner: "another-replica", Until: time.Now().Add(time.Minute)}
+	if n, err := relayOnce(context.Background(), st, kafka.send); n != 0 || err != nil || len(kafka.sent) != 0 {
+		t.Fatalf("sent %d while another replica holds the lease (err %v)", n, err)
+	}
+	st.lease.Until = time.Now().Add(-time.Millisecond) // that replica died
+	if n, err := relayOnce(context.Background(), st, kafka.send); n != 1 || err != nil || st.lease.Owner != relayOwner {
+		t.Fatalf("expired lease not taken over: sent %d, err %v, lease %+v", n, err, st.lease)
+	}
+}
+
+func TestIdleRelayTakesNoLease(t *testing.T) {
+	_, st := newTestServer()
+	if n, err := relayOnce(context.Background(), st, (&fakeKafka{}).send); n != 0 || err != nil || st.lease.Owner != "" {
+		t.Fatalf("idle relay wrote a lease: %+v (n %d, err %v)", st.lease, n, err)
 	}
 }
